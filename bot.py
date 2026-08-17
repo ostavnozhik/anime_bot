@@ -13,6 +13,10 @@ import traceback
 import sys
 import logging
 
+import db
+
+db.init_db()
+
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(name)s - %(levelname)s - %(message)s')
 logger = logging.getLogger(__name__)
 
