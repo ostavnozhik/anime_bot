@@ -36,42 +36,11 @@ next_kb = InlineKeyboardMarkup(
     ]
 )
 
-async def get_russian_title(anilist_id: int) -> str:
-    """Возвращает русское название аниме по ID из AniList, либо romaji, если русского нет."""
-    query = """
-    query ($id: Int) {
-      Media(id: $id, type: ANIME) {
-        title {
-          romaji
-          english
-          native
-        }
-      }
-    }
-    """
-    headers = {
-        "Content-Type": "application/json",
-        "Accept": "application/json",
-    }
-    payload = {
-        "query": query,
-        "variables": {"id": anilist_id}
-    }
-    async with aiohttp.ClientSession() as session:
-        async with session.post("https://graphql.anilist.co", json=payload, headers=headers) as resp:
-            data = await resp.json()
-            media = data.get("data", {}).get("Media")
-            if not media:
-                return None
-            titles = media.get("title", {})
-            return titles.get("romaji") or titles.get("english") or titles.get("native")
-
 def format_time(seconds: float) -> str:
     minutes = int(seconds // 60)
     secs = int(seconds % 60)
     return f"{minutes} мин {secs} сек"
 
-# --- Хендлеры бота ---
 @dp.message(Command('start'))
 async def start_command(message: Message, state: FSMContext):
     await state.clear()
@@ -123,25 +92,12 @@ async def handle_photo(message: Message, state: FSMContext):
             async with session.post('https://api.trace.moe/search', data=data) as resp:
                 result = await resp.json()
 
-        print(f"Ответ trace.moe: {json.dumps(result, indent=2)}")
-
+        print(f"Ответ trace.moe: {json.dumps(result, indent=2)}") 
         if not isinstance(result.get('result'), list) or len(result['result']) == 0:
             await message.reply("😔 Ничего не найдено. Попробуй другой скриншот.")
             return
 
-        results = result['result']
-        for item in results:
-            anilist_id = item.get('anilist', {}).get('id')
-            if anilist_id:
-                russian_title = await get_russian_title(anilist_id)
-                if russian_title:
-                    item['russian_title'] = russian_title
-                else:
-                    item['russian_title'] = item.get('anilist', {}).get('title', {}).get('romaji', item.get('filename', 'Неизвестно'))
-            else:
-                item['russian_title'] = item.get('filename', 'Неизвестно')
-
-        await state.update_data(results=results, index=0)
+        await state.update_data(results=result['result'], index=0)
         await show_result(message, state, 0)
 
     except Exception as e:
@@ -158,17 +114,21 @@ async def show_result(message: Message, state: FSMContext, idx: int):
 
     best = results[idx]
 
-    title = best.get('russian_title', 'Неизвестно')
+    anilist = best.get('anilist')
+    if anilist and isinstance(anilist, dict):
+        title = anilist.get('title', {})
+        name = title.get('romaji') or title.get('english') or title.get('native') or best.get('filename', 'Неизвестно')
+    else:
+        name = best.get('filename', 'Неизвестно')
 
     episode = best.get('episode', 'неизвестно')
     from_time = best.get('from', 0.0)
     similarity = best.get('similarity', 0.0) * 100
-
     time_str = format_time(from_time)
 
     answer = (
         f"✅ Найдено!\n"
-        f"📺 Название: {title}\n"
+        f"📺 Название: {name}\n"
         f"🎬 Эпизод: {episode}\n"
         f"⏱ Время: {time_str}\n"
         f"🎯 Точность: {similarity:.2f}%\n"
