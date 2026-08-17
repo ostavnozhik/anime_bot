@@ -1,10 +1,11 @@
 import os
+import asyncio
+import json
 import aiohttp
+from aiohttp import web
 from aiogram import Bot, Dispatcher, types
 from aiogram.filters import Command
 from aiogram.types import Message
-import asyncio
-import json
 
 BOT_TOKEN = os.getenv('BOT_TOKEN')
 if not BOT_TOKEN:
@@ -42,18 +43,14 @@ async def handle_photo(message: Message):
             return
 
         best = result['result'][0]
-
         if not isinstance(best, dict):
             await message.reply("⚠️ Ошибка: неверный формат данных от сервиса.")
             return
 
         anilist = best.get('anilist')
         if anilist and isinstance(anilist, dict):
-            title = anilist.get('title', {})
-            title_romaji = title.get('romaji') if isinstance(title, dict) else None
-            title_english = title.get('english') if isinstance(title, dict) else None
-            title_native = title.get('native') if isinstance(title, dict) else None
-            title = title_romaji or title_english or title_native or best.get('filename', 'Неизвестно')
+            title_obj = anilist.get('title', {})
+            title = title_obj.get('romaji') or title_obj.get('english') or title_obj.get('native') or best.get('filename', 'Неизвестно')
         else:
             title = best.get('filename', 'Неизвестно')
 
@@ -74,8 +71,26 @@ async def handle_photo(message: Message):
         print(f"Ошибка в handle_photo: {e}")
         await message.reply("⚠️ Произошла внутренняя ошибка. Попробуй позже.")
 
+async def handle_health(request):
+    return web.Response(text="OK")
+
+async def start_web_server():
+    app = web.Application()
+    app.router.add_get('/', handle_health)
+    app.router.add_get('/health', handle_health)
+    port = int(os.getenv('PORT', 10000))
+    runner = web.AppRunner(app)
+    await runner.setup()
+    site = web.TCPSite(runner, '0.0.0.0', port)
+    await site.start()
+    print(f"✅ Веб-сервер для health-check запущен на порту {port}")
+    await asyncio.Event().wait() 
+
 async def main():
-    await dp.start_polling(bot)
+    await asyncio.gather(
+        dp.start_polling(bot),
+        start_web_server()
+    )
 
 if __name__ == '__main__':
     asyncio.run(main())
