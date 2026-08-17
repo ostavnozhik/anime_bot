@@ -29,13 +29,10 @@ async def handle_photo(message: Message):
             data = aiohttp.FormData()
             data.add_field('image', file_bytes, filename='screenshot.jpg')
             async with session.post('https://api.trace.moe/search', data=data) as resp:
-                # Получаем JSON-ответ
                 result = await resp.json()
 
-        # --- Диагностика (будет видно в логах Render) ---
         print(f"Ответ от trace.moe: {json.dumps(result, indent=2)}")
 
-        # Проверяем, что ответ содержит поле 'result' и оно является списком
         if not isinstance(result.get('result'), list):
             await message.reply("⚠️ Сервис распознавания вернул неожиданный ответ. Попробуй позже.")
             return
@@ -46,12 +43,10 @@ async def handle_photo(message: Message):
 
         best = result['result'][0]
 
-        # Убедимся, что best — это словарь с нужными ключами
         if not isinstance(best, dict):
             await message.reply("⚠️ Ошибка: неверный формат данных от сервиса.")
             return
 
-        # Безопасно извлекаем данные
         anilist = best.get('anilist')
         if anilist and isinstance(anilist, dict):
             title = anilist.get('title', {})
@@ -76,7 +71,6 @@ async def handle_photo(message: Message):
         await message.reply(answer)
 
     except Exception as e:
-        # Логируем ошибку в консоль Render
         print(f"Ошибка в handle_photo: {e}")
         await message.reply("⚠️ Произошла внутренняя ошибка. Попробуй позже.")
 
