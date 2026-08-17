@@ -45,7 +45,6 @@ def format_time(seconds: float) -> str:
     return f"{minutes} мин {secs} сек"
 
 def extract_title(best: dict) -> str:
-    """Безопасно извлекает название из ответа trace.moe."""
     try:
         anilist = best.get('anilist')
         if isinstance(anilist, dict):
@@ -56,7 +55,7 @@ def extract_title(best: dict) -> str:
     except Exception:
         return "Неизвестно"
 
-# --- Команда /start ---
+# --- Команды ---
 @dp.message(Command('start'))
 async def start_command(message: Message, state: FSMContext):
     await state.clear()
@@ -66,7 +65,6 @@ async def start_command(message: Message, state: FSMContext):
         reply_markup=start_kb
     )
 
-# --- Команда /help ---
 @dp.message(Command('help'))
 async def help_command(message: Message):
     await message.reply(
@@ -77,21 +75,20 @@ async def help_command(message: Message):
         "Если что-то сломалось, отправь /start заново."
     )
 
-# --- Команда /clear (сброс) ---
 @dp.message(Command('clear'))
 async def clear_command(message: Message, state: FSMContext):
     await state.clear()
     await message.reply("🧹 Состояние сброшено. Начни заново через /start.")
 
-# --- Кнопка "Старт" ---
+# --- Кнопка "Старт" (исправлена) ---
 @dp.callback_query(lambda c: c.data == "start")
 async def process_start(callback: CallbackQuery, state: FSMContext):
     try:
         await callback.answer()
         await callback.message.edit_text(
-            "Отправь мне скриншот из аниме."
+            "Отправь мне скриншот из аниме.",
+            reply_markup=None
         )
-        await callback.message.edit_reply_markup(reply_markup=None)
     except Exception as e:
         print(f"Ошибка в process_start: {e}")
         await callback.message.answer("⚠️ Ошибка, попробуй /start")
@@ -123,7 +120,7 @@ async def handle_photo(message: Message, state: FSMContext):
             async with session.post('https://api.trace.moe/search', data=data) as resp:
                 result = await resp.json()
 
-        print(f"Ответ trace.moe: {json.dumps(result, indent=2)[:500]}")  # лог сокращён
+        print(f"Ответ trace.moe: {json.dumps(result, indent=2)[:500]}")
 
         if not isinstance(result.get('result'), list) or len(result['result']) == 0:
             await message.reply("😔 Ничего не найдено. Попробуй другой скриншот.")
@@ -192,17 +189,16 @@ async def process_next(callback: CallbackQuery, state: FSMContext):
             return
 
         await show_result(callback.message, state, next_idx)
-        # удаляем предыдущее сообщение, но ловим ошибку, если уже удалено
         try:
             await callback.message.delete()
         except Exception:
-            pass  # ничего страшного
+            pass
 
     except Exception as e:
         print(f"Ошибка в process_next: {e}")
         await callback.message.answer("⚠️ Ошибка, попробуй /start")
 
-# --- Веб-сервер для health-check ---
+# --- Веб-сервер health-check ---
 async def handle_health(request):
     return web.Response(text="OK")
 
@@ -227,7 +223,6 @@ async def main():
         )
     except Exception as e:
         print(f"Критическая ошибка: {e}")
-        # Попытка перезапустить через 5 секунд (для самовосстановления)
         await asyncio.sleep(5)
         os.execv(sys.executable, ['python'] + sys.argv)
 
