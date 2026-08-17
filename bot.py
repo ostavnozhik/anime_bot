@@ -10,26 +10,23 @@ from aiogram.fsm.context import FSMContext
 from aiogram.fsm.state import State, StatesGroup
 from aiogram.fsm.storage.memory import MemoryStorage
 
-# --- Токен ---
 BOT_TOKEN = os.getenv('BOT_TOKEN')
 if not BOT_TOKEN:
     print("❌ BOT_TOKEN не задан")
     exit(1)
 
-# --- Хранилище для FSM ---
 storage = MemoryStorage()
 bot = Bot(token=BOT_TOKEN)
 dp = Dispatcher(storage=storage)
 
-# --- Состояния FSM ---
 class SearchState(StatesGroup):
-    results = State()   # список результатов
-    index = State()     # текущий индекс (0-based)
+    results = State()
+    index = State()
 
-# --- Клавиатуры ---
 start_kb = InlineKeyboardMarkup(
     inline_keyboard=[
-        [InlineKeyboardButton(text="🚀 Старт", callback_data="start")]
+        [InlineKeyboardButton(text="🚀 Старт", callback_data="start")],
+        [InlineKeyboardButton(text="❓ Помощь", callback_data="help")]
     ]
 )
 
@@ -39,7 +36,42 @@ next_kb = InlineKeyboardMarkup(
     ]
 )
 
-# --- Хендлер команды /start ---
+async def get_russian_title(anilist_id: int) -> str:
+    """Возвращает русское название аниме по ID из AniList, либо romaji, если русского нет."""
+    query = """
+    query ($id: Int) {
+      Media(id: $id, type: ANIME) {
+        title {
+          romaji
+          english
+          native
+        }
+      }
+    }
+    """
+    headers = {
+        "Content-Type": "application/json",
+        "Accept": "application/json",
+    }
+    payload = {
+        "query": query,
+        "variables": {"id": anilist_id}
+    }
+    async with aiohttp.ClientSession() as session:
+        async with session.post("https://graphql.anilist.co", json=payload, headers=headers) as resp:
+            data = await resp.json()
+            media = data.get("data", {}).get("Media")
+            if not media:
+                return None
+            titles = media.get("title", {})
+            return titles.get("romaji") or titles.get("english") or titles.get("native")
+
+def format_time(seconds: float) -> str:
+    minutes = int(seconds // 60)
+    secs = int(seconds % 60)
+    return f"{minutes} мин {secs} сек"
+
+# --- Хендлеры бота ---
 @dp.message(Command('start'))
 async def start_command(message: Message, state: FSMContext):
     await state.clear()
@@ -49,49 +81,73 @@ async def start_command(message: Message, state: FSMContext):
         reply_markup=start_kb
     )
 
-# --- Обработчик нажатия кнопки "Старт" ---
+@dp.message(Command('help'))
+async def help_command(message: Message):
+    await message.reply(
+        "🤖 Как я работаю:\n"
+        "1. Нажми «Старт» или отправь /start\n"
+        "2. Пришли скриншот из аниме\n"
+        "3. Я найду несколько вариантов (если есть)\n"
+        "4. Нажимай «Нет, ищи другое», чтобы переключать результаты\n"
+        "Если ничего не найдено — попробуй другой скриншот."
+    )
+
 @dp.callback_query(lambda c: c.data == "start")
 async def process_start(callback: CallbackQuery, state: FSMContext):
     await callback.answer()
     await callback.message.edit_text(
         "Отправь мне скриншот из аниме, и я попробую найти его источник."
     )
-    # Убираем клавиатуру, так как теперь ждём фото
     await callback.message.edit_reply_markup(reply_markup=None)
 
-# --- Хендлер фото ---
+@dp.callback_query(lambda c: c.data == "help")
+async def process_help(callback: CallbackQuery):
+    await callback.answer()
+    await callback.message.answer(
+        "🤖 Я умею искать аниме по скриншоту.\n"
+        "Просто отправь мне фото, и я найду источник.\n"
+        "Если найдено несколько вариантов — нажимай «Нет, ищи другое» для переключения.\n"
+        "Всегда можно начать заново через /start."
+    )
+
 @dp.message(lambda msg: msg.photo is not None)
 async def handle_photo(message: Message, state: FSMContext):
     try:
-        # Скачиваем фото
         photo = message.photo[-1]
         file = await bot.get_file(photo.file_id)
         file_bytes = await bot.download_file(file.file_path)
 
-        # Отправляем запрос к trace.moe
         async with aiohttp.ClientSession() as session:
             data = aiohttp.FormData()
             data.add_field('image', file_bytes, filename='screenshot.jpg')
             async with session.post('https://api.trace.moe/search', data=data) as resp:
                 result = await resp.json()
 
-        # Логируем ответ (для отладки)
         print(f"Ответ trace.moe: {json.dumps(result, indent=2)}")
 
-        # Проверяем структуру ответа
         if not isinstance(result.get('result'), list) or len(result['result']) == 0:
             await message.reply("😔 Ничего не найдено. Попробуй другой скриншот.")
             return
 
-        # Сохраняем результаты в FSM
-        await state.update_data(results=result['result'], index=0)
+        results = result['result']
+        for item in results:
+            anilist_id = item.get('anilist', {}).get('id')
+            if anilist_id:
+                russian_title = await get_russian_title(anilist_id)
+                if russian_title:
+                    item['russian_title'] = russian_title
+                else:
+                    item['russian_title'] = item.get('anilist', {}).get('title', {}).get('romaji', item.get('filename', 'Неизвестно'))
+            else:
+                item['russian_title'] = item.get('filename', 'Неизвестно')
+
+        await state.update_data(results=results, index=0)
         await show_result(message, state, 0)
 
     except Exception as e:
         print(f"Ошибка в handle_photo: {e}")
         await message.reply("⚠️ Произошла ошибка. Попробуй позже.")
 
-# --- Функция показа результата по индексу ---
 async def show_result(message: Message, state: FSMContext, idx: int):
     data = await state.get_data()
     results = data.get('results')
@@ -101,33 +157,27 @@ async def show_result(message: Message, state: FSMContext, idx: int):
         return
 
     best = results[idx]
-    # Извлечение названия
-    anilist = best.get('anilist')
-    if anilist and isinstance(anilist, dict):
-        title_obj = anilist.get('title', {})
-        title = title_obj.get('romaji') or title_obj.get('english') or title_obj.get('native') or best.get('filename', 'Неизвестно')
-    else:
-        title = best.get('filename', 'Неизвестно')
+
+    title = best.get('russian_title', 'Неизвестно')
 
     episode = best.get('episode', 'неизвестно')
     from_time = best.get('from', 0.0)
     similarity = best.get('similarity', 0.0) * 100
 
+    time_str = format_time(from_time)
+
     answer = (
         f"✅ Найдено!\n"
         f"📺 Название: {title}\n"
         f"🎬 Эпизод: {episode}\n"
-        f"⏱ Время: {from_time:.1f} сек.\n"
+        f"⏱ Время: {time_str}\n"
         f"🎯 Точность: {similarity:.2f}%\n"
         f"({idx+1}/{len(results)})"
     )
 
-    # Показываем результат с кнопкой "Нет, ищи другое"
     await message.reply(answer, reply_markup=next_kb)
-    # Сохраняем текущий индекс в состоянии
     await state.update_data(index=idx)
 
-# --- Обработчик кнопки "Нет, ищи другое" ---
 @dp.callback_query(lambda c: c.data == "next")
 async def process_next(callback: CallbackQuery, state: FSMContext):
     await callback.answer()
@@ -146,12 +196,9 @@ async def process_next(callback: CallbackQuery, state: FSMContext):
         await state.clear()
         return
 
-    # Показываем следующий результат
     await show_result(callback.message, state, next_idx)
-    # Удаляем предыдущее сообщение с кнопкой (по желанию)
     await callback.message.delete()
 
-# --- Веб-сервер для health-check (чтобы Render не ругался) ---
 async def handle_health(request):
     return web.Response(text="OK")
 
@@ -164,10 +211,9 @@ async def start_web_server():
     await runner.setup()
     site = web.TCPSite(runner, '0.0.0.0', port)
     await site.start()
-    print(f"✅ Веб-сервер для health-check запущен на порту {port}")
+    print(f"✅ Веб-сервер health-check запущен на порту {port}")
     await asyncio.Event().wait()
 
-# --- Запуск бота и сервера ---
 async def main():
     await asyncio.gather(
         dp.start_polling(bot),
