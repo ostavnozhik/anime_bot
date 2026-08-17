@@ -33,7 +33,6 @@ class SearchState(StatesGroup):
     results = State()
     index = State()
 
-# --- Клавиатуры ---
 start_kb = InlineKeyboardMarkup(
     inline_keyboard=[
         [InlineKeyboardButton(text="🚀 Старт", callback_data="start")],
@@ -63,12 +62,19 @@ def extract_title(best: dict) -> str:
     except Exception:
         return "Неизвестно"
 
-# --- Команды ---
 @dp.message(Command('start'))
 async def start_command(message: Message, state: FSMContext):
+    user = message.from_user
+    db.add_user(
+        user_id=user.id,
+        username=user.username,
+        first_name=user.first_name
+    )
+    
     await state.clear()
     await message.reply(
-        "Привет! Отправь мне скриншот из аниме.\nИли нажми кнопку «Старт».",
+        "Привет! Отправь мне скриншот из аниме.\n"
+        "Или нажми кнопку «Старт».",
         reply_markup=start_kb
     )
 
@@ -180,7 +186,6 @@ async def process_next(callback: CallbackQuery, state: FSMContext):
         logger.error(f"process_next: {e}")
         await callback.message.answer("⚠️ Ошибка, попробуй /start")
 
-# --- Веб-сервер для health-check (без изменений) ---
 async def handle_health(request):
     return web.Response(text="OK")
 
@@ -196,32 +201,24 @@ async def start_web_server():
     logger.info(f"✅ Веб-сервер health-check запущен на порту {port}")
     await asyncio.Event().wait()
 
-# --- Фоновый сторож (watchdog) ---
 async def watchdog():
     """Проверяет соединение с Telegram каждые 30 секунд, если бот не отвечает — инициирует перезапуск."""
     while True:
         await asyncio.sleep(30)
         try:
-            # Проверяем, жив ли бот через простой запрос
             await bot.get_me()
             logger.debug("Watchdog: соединение с Telegram работает")
         except Exception as e:
             logger.error(f"Watchdog: соединение потеряно ({e}), инициируем перезапуск поллинга")
-            # Принудительно завершаем текущий поллинг, вызвав исключение в основном цикле
-            # Но проще: остановить бота и дать внешнему циклу перезапустить
             await bot.session.close()
-            # Выбросим исключение, которое поймает bot_runner
             raise RuntimeError("Watchdog инициировал перезапуск")
 
-# --- Главный цикл с перезапуском ---
 async def bot_runner():
     while True:
         try:
             logger.info("🚀 Запуск бота...")
-            # Запускаем сторож в фоне
             watchdog_task = asyncio.create_task(watchdog())
             await dp.start_polling(bot)
-            # Если поллинг завершился без ошибок — отменяем сторожа и перезапускаем
             watchdog_task.cancel()
             logger.warning("⚠️ Поллинг завершился, перезапуск через 2 секунды")
             await asyncio.sleep(2)
@@ -233,14 +230,12 @@ async def bot_runner():
             logger.info("🔄 Перезапуск через 5 секунд...")
             await asyncio.sleep(5)
         finally:
-            # Закрываем старую сессию, чтобы не было утечек
             try:
                 await bot.session.close()
             except Exception:
                 pass
 
 async def main():
-    # Запускаем веб-сервер и бота параллельно
     await asyncio.gather(
         bot_runner(),
         start_web_server()
