@@ -1,17 +1,25 @@
-import asyncio
-import aiohttp
 import os
+import aiohttp
 from aiogram import Bot, Dispatcher, types
 from aiogram.types import Message
+import asyncio
 
+# Получаем токен
 BOT_TOKEN = os.getenv('BOT_TOKEN')
+
+# Проверяем, что токен задан
+if not BOT_TOKEN:
+    print("❌ ОШИБКА: BOT_TOKEN не задан! Установите переменную окружения.")
+    exit(1)
+
+print("✅ Токен получен, запускаю бота...")
 
 bot = Bot(token=BOT_TOKEN)
 dp = Dispatcher()
 
 @dp.message_handler(commands=['start'])
 async def start_command(message: Message):
-    await message.reply("Привет! Отправь мне скриншот из аниме, и я попробую найти его источник.")
+    await message.reply("Привет! Отправь мне скриншот из аниме.")
 
 @dp.message_handler(content_types=['photo'])
 async def handle_photo(message: Message):
