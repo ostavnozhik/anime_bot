@@ -1,25 +1,23 @@
 import os
 import aiohttp
 from aiogram import Bot, Dispatcher, types
+from aiogram.filters import Command
 from aiogram.types import Message
 import asyncio
 
 BOT_TOKEN = os.getenv('BOT_TOKEN')
-
 if not BOT_TOKEN:
-    print("❌ ОШИБКА: BOT_TOKEN не задан! Установите переменную окружения.")
+    print("❌ BOT_TOKEN не задан")
     exit(1)
-
-print("✅ Токен получен, запускаю бота...")
 
 bot = Bot(token=BOT_TOKEN)
 dp = Dispatcher()
 
-@dp.message(commands=['start'])
+@dp.message(Command('start'))
 async def start_command(message: Message):
-    await message.reply("Привет! Отправь мне скриншот из аниме, и я попробую найти его источник.")
+    await message.reply("Привет! Отправь мне скриншот из аниме.")
 
-@dp.message(content_types=['photo'])
+@dp.message(lambda msg: msg.photo is not None)
 async def handle_photo(message: Message):
     photo = message.photo[-1]
     file = await bot.get_file(photo.file_id)
@@ -38,16 +36,15 @@ async def handle_photo(message: Message):
         from_time = best['from']
         similarity = best['similarity'] * 100
 
-        answer = (
+        await message.reply(
             f"✅ Найдено!\n"
             f"📺 Название: {title}\n"
             f"🎬 Эпизод: {episode}\n"
             f"⏱ Время: {from_time:.1f} сек.\n"
             f"🎯 Точность: {similarity:.2f}%"
         )
-        await message.reply(answer)
     else:
-        await message.reply("😔 Ничего не найдено. Попробуйте другой скриншот.")
+        await message.reply("😔 Ничего не найдено. Попробуй другой скриншот.")
 
 async def main():
     await dp.start_polling(bot)
