@@ -5,7 +5,7 @@ import aiohttp
 from aiohttp import web
 from aiogram import Bot, Dispatcher, types
 from aiogram.filters import Command
-from aiogram.types import Message, CallbackQuery, InlineKeyboardMarkup, InlineKeyboardButton, BotCommand
+from aiogram.types import Message, CallbackQuery, InlineKeyboardMarkup, InlineKeyboardButton, BotCommand, ContentType
 from aiogram.fsm.context import FSMContext
 from aiogram.fsm.state import State, StatesGroup
 from aiogram.fsm.storage.memory import MemoryStorage
@@ -19,7 +19,6 @@ import tempfile
 import io
 from PIL import Image
 
-# Включаем буферизацию вывода в реальном времени
 sys.stdout.reconfigure(line_buffering=True)
 
 print("🚀 БОТ ЗАПУСКАЕТСЯ...")
@@ -31,7 +30,6 @@ if not BOT_TOKEN:
 
 print("✅ Токен получен")
 
-# Проверка ffmpeg
 try:
     result = subprocess.run(['ffmpeg', '-version'], capture_output=True, text=True, timeout=5)
     print("✅ FFmpeg доступен")
@@ -103,7 +101,6 @@ def extract_title(best: dict) -> str:
         return "Неизвестно"
 
 def compress_image(image_bytes: bytes, max_size: int = 800) -> bytes:
-    # Без сжатия для теста
     print("   🖼️ Сжатие пропущено (размер:", len(image_bytes), "байт)")
     return image_bytes
 
@@ -159,7 +156,7 @@ async def set_default_commands():
     await bot.set_my_commands(commands)
     print("✅ Меню команд установлено")
 
-# --- Хендлеры ---
+# --- Команды ---
 @dp.message(Command('start'))
 async def start_command(message: Message, state: FSMContext):
     print(f"📩 Получена команда /start от {message.from_user.id}")
@@ -194,14 +191,8 @@ async def process_help(callback: CallbackQuery):
     except Exception as e:
         print(f"❌ Ошибка в process_help: {e}")
 
-# --- ДЕБАГ: обработчик любых сообщений (чтобы видеть, что приходит) ---
-@dp.message()
-async def debug_all_messages(message: Message):
-    print(f"📩 Получено сообщение типа {message.content_type} от {message.from_user.id}")
-    # Если это фото или видео, они обработаются в других хендлерах, но мы просто залогируем
-
-# --- Обработчик фото ---
-@dp.message(lambda msg: msg.photo is not None)
+# --- Обработчик фото (исправлен) ---
+@dp.message(ContentType.PHOTO)
 async def handle_photo(message: Message, state: FSMContext):
     print(f"📸 Обработка фото от {message.from_user.id}")
     try:
@@ -247,8 +238,8 @@ async def handle_photo(message: Message, state: FSMContext):
         print(f"❌ Ошибка handle_photo:\n{traceback.format_exc()}")
         await message.reply("⚠️ Ошибка, попробуй другой скриншот или /start")
 
-# --- Обработчик видео ---
-@dp.message(lambda msg: msg.video is not None)
+# --- Обработчик видео (исправлен) ---
+@dp.message(ContentType.VIDEO)
 async def handle_video(message: Message, state: FSMContext):
     print(f"🎬 Обработка видео от {message.from_user.id}")
     try:
