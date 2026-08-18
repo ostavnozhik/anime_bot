@@ -160,6 +160,7 @@ async def set_default_commands():
 @dp.message(Command('start'))
 async def start_command(message: Message, state: FSMContext):
     print(f"📩 /start от {message.from_user.id}")
+    # Полная очистка состояния
     await state.clear()
     await message.reply(
         "👋 Привет! Отправь скриншот или видео, и я найду аниме.\n\n❓ Помощь — /help",
@@ -213,6 +214,8 @@ async def handle_photo(message: Message, state: FSMContext):
         cached = await get_cached_result(cache_key)
         if cached:
             print("   ♻️ Используем кеш")
+            # Полная замена состояния
+            await state.clear()
             await state.update_data(results=cached['result'], index=0, video_bytes=None, search_count=0)
             await show_result(message, state, 0)
             return
@@ -228,14 +231,14 @@ async def handle_photo(message: Message, state: FSMContext):
             await message.reply("😔 Ничего не найдено. Попробуй другой скриншот.")
             return
 
-        # Сохраняем результаты в состояние
         results_list = result['result']
-        # Убедимся, что это список словарей
+        # Проверка, что это список словарей
         if not results_list or not isinstance(results_list[0], dict):
             await message.reply("⚠️ Неверный формат данных от сервиса.")
             return
 
         cache_result(cache_key, {'result': results_list})
+        await state.clear()
         await state.update_data(results=results_list, index=0, video_bytes=None, search_count=0)
         await show_result(message, state, 0)
 
@@ -258,6 +261,11 @@ async def handle_video(message: Message, state: FSMContext):
         user_last_request[user_id] = now
 
         video = message.video
+        # Проверка размера файла (Telegram Bot API ограничение 20 МБ)
+        if video.file_size > 20 * 1024 * 1024:
+            await message.reply("⚠️ Видео слишком большое (максимум 20 МБ).")
+            return
+
         file = await bot.get_file(video.file_id)
         file_bytes = await bot.download_file(file.file_path)
         raw_bytes = file_bytes.getvalue()
@@ -267,6 +275,7 @@ async def handle_video(message: Message, state: FSMContext):
         cached = await get_cached_result(cache_key)
         if cached:
             print("   ♻️ Используем кеш")
+            await state.clear()
             await state.update_data(results=cached['result'], index=0, video_bytes=raw_bytes, search_count=0)
             await show_result(message, state, 0)
             return
@@ -303,6 +312,7 @@ async def handle_video(message: Message, state: FSMContext):
             return
 
         cache_result(cache_key, {'result': results_list})
+        await state.clear()
         await state.update_data(results=results_list, index=0, video_bytes=raw_bytes, search_count=0)
         await show_result(message, state, 0)
 
@@ -350,6 +360,7 @@ async def show_result(message: Message, state: FSMContext, idx: int):
             answer += f"\n\n🔗 [Смотреть на Shikimori]({shikimori_url})"
 
         await message.reply(answer, reply_markup=next_kb)
+        # Обновляем только индекс, остальное не трогаем
         await state.update_data(index=idx)
 
     except Exception as e:
@@ -367,11 +378,6 @@ async def process_next(callback: CallbackQuery, state: FSMContext):
         idx = data.get('index', 0)
         video_bytes = data.get('video_bytes')
         search_count = data.get('search_count', 0)
-
-        if not results:
-            await callback.message.edit_text("⚠️ Результаты не найдены. Попробуй /start")
-            await state.clear()
-            return
 
         # Проверка корректности results
         if not isinstance(results, list) or not results or not isinstance(results[0], dict):
@@ -412,7 +418,8 @@ async def process_next(callback: CallbackQuery, state: FSMContext):
                 await callback.message.edit_text("⚠️ Неверный формат данных.")
                 return
 
-            await state.update_data(results=new_results, index=0, search_count=1)
+            await state.clear()
+            await state.update_data(results=new_results, index=0, search_count=1, video_bytes=video_bytes)
             await show_result(callback.message, state, 0)
             try:
                 await callback.message.delete()
