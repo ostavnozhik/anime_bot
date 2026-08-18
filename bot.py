@@ -94,7 +94,6 @@ def extract_title(best: dict) -> str:
         return "Неизвестно"
 
 def compress_image(image_bytes: bytes, max_size: int = 800) -> bytes:
-    # Для теста сжатие отключено
     print(f"   🖼️ Размер фото: {len(image_bytes)} байт")
     return image_bytes
 
@@ -153,7 +152,7 @@ async def set_default_commands():
 @dp.message(Command('start'))
 async def start_command(message: Message):
     user_id = message.from_user.id
-    user_data.pop(user_id, None)  # очищаем данные пользователя
+    user_data.pop(user_id, None)
     print(f"📩 /start от {user_id}")
     await message.reply(
         "👋 Привет! Отправь скриншот или видео, и я найду аниме.\n\n❓ Помощь — /help",
@@ -190,6 +189,10 @@ async def process_help(callback: CallbackQuery):
 async def handle_photo(message: Message):
     user_id = message.from_user.id
     print(f"📸 Обработка фото от {user_id}")
+    
+    # Принудительно очищаем старые данные пользователя
+    user_data.pop(user_id, None)
+    
     try:
         now = time.time()
         if now - user_last_request[user_id] < REQUEST_INTERVAL:
@@ -252,6 +255,10 @@ async def handle_photo(message: Message):
 async def handle_video(message: Message):
     user_id = message.from_user.id
     print(f"🎬 Обработка видео от {user_id}")
+    
+    # Принудительно очищаем старые данные пользователя
+    user_data.pop(user_id, None)
+    
     try:
         now = time.time()
         if now - user_last_request[user_id] < REQUEST_INTERVAL:
@@ -338,8 +345,9 @@ async def show_result(message: Message, user_id: int):
         results = data.get('results')
         idx = data.get('index', 0)
 
+        # Полная проверка корректности данных
         if not isinstance(results, list) or not results or not isinstance(results[0], dict):
-            print(f"❌ Некорректные данные: {type(results)}")
+            print(f"❌ Некорректные данные: {type(results)}, {results}")
             await message.reply("⚠️ Ошибка данных. Попробуй /start заново.")
             user_data.pop(user_id, None)
             return
@@ -371,7 +379,6 @@ async def show_result(message: Message, user_id: int):
             answer += f"\n\n🔗 [Смотреть на Shikimori]({shikimori_url})"
 
         await message.reply(answer, reply_markup=next_kb)
-        # Обновляем индекс в хранилище
         user_data[user_id]['index'] = idx
 
     except Exception as e:
