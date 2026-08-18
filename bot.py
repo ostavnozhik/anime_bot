@@ -71,6 +71,7 @@ next_kb = InlineKeyboardMarkup(
     ]
 )
 
+# --- Вспомогательные функции ---
 def format_time(seconds: float) -> str:
     minutes = int(seconds // 60)
     secs = int(seconds % 60)
@@ -106,11 +107,7 @@ def compress_image(image_bytes: bytes, max_size: int = 800) -> bytes:
     print(f"   🖼️ Размер фото: {len(image_bytes)} байт")
     return image_bytes
 
-def extract_frames_advanced(video_path: str, num_frames: int = 12) -> list:
-    """
-    Извлекает равномерно распределённые кадры из видео.
-    num_frames — количество кадров (по умолчанию 12).
-    """
+def extract_frames_advanced(video_path: str, num_frames: int = 8) -> list:
     print(f"   🎬 Извлечение {num_frames} кадров...")
     cmd_duration = [
         'ffprobe', '-v', 'error', '-show_entries',
@@ -124,7 +121,7 @@ def extract_frames_advanced(video_path: str, num_frames: int = 12) -> list:
         raise Exception("Не удалось получить длительность видео")
 
     frames = []
-    step = 100 / (num_frames + 1)  # например, для 12 кадров шаг ~7.69%
+    step = 100 / (num_frames + 1)
     for i in range(1, num_frames + 1):
         pct = i * step
         time_sec = duration * (pct / 100.0)
@@ -144,6 +141,7 @@ def extract_frames_advanced(video_path: str, num_frames: int = 12) -> list:
             print(f"   ❌ ffmpeg ошибка: {e}")
     return frames
 
+# --- API functions ---
 async def search_by_frame(image_bytes: bytes) -> dict:
     print(f"   🔍 Запрос к trace.moe, размер {len(image_bytes)} байт")
     async with aiohttp.ClientSession(timeout=aiohttp.ClientTimeout(total=30)) as session:
@@ -151,9 +149,43 @@ async def search_by_frame(image_bytes: bytes) -> dict:
         data.add_field('image', image_bytes, filename='frame.jpg')
         async with session.post('https://api.trace.moe/search', data=data) as resp:
             result = await resp.json()
-            print(f"   📨 Ответ trace.moe: {json.dumps(result, indent=2, ensure_ascii=False)[:1000]}")
+            print(f"   📨 Ответ trace.moe: {json.dumps(result, indent=2, ensure_ascii=False)[:500]}")
             return result
 
+async def search_saucenao(image_bytes: bytes) -> dict:
+    print("   🔍 Запрос к SauceNAO...")
+    api_key = os.getenv('SAUCENAO_API_KEY', '')
+    url = "https://saucenao.com/search.php"
+    params = {"output_type": 2, "api_key": api_key, "numres": 1, "db": 999}
+    async with aiohttp.ClientSession(timeout=aiohttp.ClientTimeout(total=30)) as session:
+        data = aiohttp.FormData()
+        data.add_field('file', image_bytes, filename='image.jpg')
+        async with session.post(url, params=params, data=data) as resp:
+            result = await resp.json()
+            print(f"   📨 Ответ SauceNAO: {json.dumps(result, indent=2, ensure_ascii=False)[:500]}")
+            return result
+
+def parse_saucenao_result(data: dict) -> dict:
+    try:
+        results = data.get('results', [])
+        if not results:
+            return None
+        first = results[0]
+        if first.get('header', {}).get('similarity', 0) < 60:
+            return None
+        data_obj = first.get('data', {})
+        title = data_obj.get('title') or data_obj.get('source') or data_obj.get('eng_name')
+        if not title:
+            return None
+        return {
+            'title': title,
+            'similarity': first['header']['similarity'],
+            'url': data_obj.get('ext_urls', [''])[0] if data_obj.get('ext_urls') else None
+        }
+    except Exception:
+        return None
+
+# --- Команды и хендлеры ---
 async def set_default_commands():
     commands = [
         BotCommand(command="start", description="🚀 Запустить бота"),
@@ -298,29 +330,63 @@ async def handle_video(message: Message):
             tmp_file.write(raw_bytes)
             video_path = tmp_file.name
 
-        frames = extract_frames_advanced(video_path, num_frames=12)
+        frames = extract_frames_advanced(video_path, num_frames=8)
         os.unlink(video_path)
 
         if not frames:
             await message.reply("⚠️ Не удалось извлечь кадры из видео.")
             return
 
-        print(f"   🔍 Отправка {len(frames)} кадров на поиск...")
+        # --- Быстрый поиск через trace.moe (первые 3 кадра) ---
         found_result = None
-        for idx, frame_bytes in enumerate(frames):
-            print(f"   🔍 Ищем по кадру {idx+1}/{len(frames)}")
+        for idx, frame_bytes in enumerate(frames[:3]):
+            print(f"   🔍 trace.moe кадр {idx+1}/3")
             compressed = compress_image(frame_bytes)
             result = await search_by_frame(compressed)
             if result.get('result') and len(result['result']) > 0:
-                found_result = result
-                print(f"   ✅ Найдено на кадре {idx+1}!")
-                break
-            await asyncio.sleep(0.3)
+                if result['result'][0]['similarity'] > 0.6:
+                    found_result = result
+                    break
+            await asyncio.sleep(0.2)
 
+        # --- Если не нашёл, пробуем SauceNAO (1 кадр) ---
         if not found_result:
-            await message.reply("😔 По этому видео ничего не найдено.")
-            return
+            print("   🔄 trace.moe не нашёл, пробуем SauceNAO (1 кадр)...")
+            mid_frame = frames[len(frames)//2]
+            try:
+                saucenao_result = await asyncio.wait_for(
+                    search_saucenao(mid_frame),
+                    timeout=5.0
+                )
+                parsed = parse_saucenao_result(saucenao_result)
+                if parsed:
+                    title = parsed['title']
+                    similarity = parsed['similarity']
+                    url = parsed.get('url')
+                    answer = (
+                        f"✅ Найдено через SauceNAO!\n"
+                        f"📺 Название: {title}\n"
+                        f"🎯 Точность: {similarity:.2f}%\n"
+                    )
+                    if url:
+                        answer += f"\n🔗 [Ссылка]({url})"
+                    await message.reply(answer)
+                    # сохраняем результат (не для переключения, но для кеша)
+                    user_data[user_id] = {
+                        'results': [{'title': title, 'similarity': similarity/100, 'url': url, 'from': 0, 'episode': 'неизвестно'}],
+                        'index': 0,
+                        'video_bytes': raw_bytes,
+                        'search_count': 0
+                    }
+                    return
+                else:
+                    await message.reply("😔 Ни trace.moe, ни SauceNAO не нашли аниме.")
+                    return
+            except asyncio.TimeoutError:
+                await message.reply("⏳ SauceNAO долго отвечает, попробуй позже.")
+                return
 
+        # --- Если нашли через trace.moe ---
         results_list = found_result['result']
         if not results_list or not isinstance(results_list[0], dict):
             await message.reply("⚠️ Неверный формат данных от сервиса.")
@@ -361,6 +427,24 @@ async def show_result(message: Message, user_id: int):
             return
 
         best = results[idx]
+
+        # Проверка: результат от SauceNAO (нет поля anilist)
+        if 'anilist' not in best:
+            name = best.get('title', 'Неизвестно')
+            similarity = best.get('similarity', 0.0) * 100
+            url = best.get('url')
+            answer = (
+                f"✅ Найдено (SauceNAO)!\n"
+                f"📺 Название: {name}\n"
+                f"🎯 Точность: {similarity:.2f}%\n"
+            )
+            if url:
+                answer += f"\n🔗 [Ссылка]({url})"
+            await message.reply(answer, reply_markup=next_kb)
+            user_data[user_id]['index'] = idx
+            return
+
+        # Обычный результат от trace.moe
         name = safe_get_title(best)
         episode = best.get('episode', 'неизвестно')
         from_time = best.get('from', 0.0)
@@ -410,14 +494,12 @@ async def process_next(callback: CallbackQuery):
             return
 
         if video_bytes is not None and search_count == 0:
-            print("   🔄 Используем второй набор кадров (12 кадров со смещением)")
-            # второй набор: другой сдвиг (можно просто ещё 12 кадров с другим шагом)
+            print("   🔄 Используем второй набор кадров (8 кадров со смещением)")
             with tempfile.NamedTemporaryFile(delete=False, suffix=".mp4") as tmp_file:
                 tmp_file.write(video_bytes)
                 video_path = tmp_file.name
 
-            # Используем ту же функцию, но можно изменить параметры (например, начать с 2% и шаг 7.5%)
-            frames = extract_frames_advanced(video_path, num_frames=12)
+            frames = extract_frames_advanced(video_path, num_frames=8)
             os.unlink(video_path)
 
             if not frames:
@@ -429,9 +511,10 @@ async def process_next(callback: CallbackQuery):
                 compressed = compress_image(frame_bytes)
                 result = await search_by_frame(compressed)
                 if result.get('result') and len(result['result']) > 0:
-                    found_result = result
-                    break
-                await asyncio.sleep(0.3)
+                    if result['result'][0]['similarity'] > 0.6:
+                        found_result = result
+                        break
+                await asyncio.sleep(0.2)
 
             if not found_result:
                 await callback.message.edit_text("😔 Второй набор кадров ничего не дал.")
