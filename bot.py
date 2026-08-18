@@ -29,13 +29,14 @@ bot = Bot(token=BOT_TOKEN)
 dp = Dispatcher(storage=storage)
 
 class SearchState(StatesGroup):
-    results = State()         
-    index = State()           
-    video_bytes = State()      
-    search_count = State()    
+    results = State()
+    index = State()
+    video_bytes = State()
+    search_count = State()
 
+# --- Кеш ---
 search_cache = {}
-CACHE_TTL = 3600 
+CACHE_TTL = 3600
 
 def get_cache_key(data: bytes) -> str:
     return hashlib.md5(data).hexdigest()
@@ -52,9 +53,11 @@ async def get_cached_result(key: str):
 def cache_result(key: str, result):
     search_cache[key] = (result, time.time())
 
+# --- Троттлинг ---
 user_last_request = defaultdict(float)
-REQUEST_INTERVAL = 3  
+REQUEST_INTERVAL = 3
 
+# --- Клавиатуры ---
 help_kb = InlineKeyboardMarkup(
     inline_keyboard=[
         [InlineKeyboardButton(text="❓ Помощь", callback_data="help")]
@@ -67,6 +70,7 @@ next_kb = InlineKeyboardMarkup(
     ]
 )
 
+# --- Вспомогательные функции ---
 def format_time(seconds: float) -> str:
     minutes = int(seconds // 60)
     secs = int(seconds % 60)
@@ -97,7 +101,6 @@ def compress_image(image_bytes: bytes, max_size: int = 800) -> bytes:
         return image_bytes
 
 def extract_frames(video_path: str, percentages: list) -> list:
-    """Извлекает кадры из видео на указанных процентах."""
     cap = cv2.VideoCapture(video_path)
     if not cap.isOpened():
         raise Exception("Не удалось открыть видео")
@@ -123,68 +126,67 @@ async def search_by_frame(image_bytes: bytes) -> dict:
         async with session.post('https://api.trace.moe/search', data=data) as resp:
             return await resp.json()
 
+# --- Установка команд меню ---
 async def set_default_commands():
     commands = [
         BotCommand(command="start", description="🚀 Запустить бота"),
-        BotCommand(command="help", description="❓ Помощь и инструкция"),
+        BotCommand(command="help", description="❓ Помощь"),
     ]
     await bot.set_my_commands(commands)
     print("✅ Меню команд установлено")
 
+# --- Команды ---
 @dp.message(Command('start'))
 async def start_command(message: Message, state: FSMContext):
     await state.clear()
     await message.reply(
-        "👋 Привет! Я помогу найти аниме по скриншоту или видео.\n\n"
-        "📸 Отправь мне фото или видео, и я попробую определить, откуда этот кадр.\n"
-        "🎬 Если отправляешь видео — сначала я возьму 5 кадров (5%, 20%, 50%, 70%, 95%).\n"
-        "🔄 Если результат не тот, нажми «Нет, ищи другое» — я возьму новые кадры (8%, 22%, 53%, 75%, 90%).\n\n"
-        "❓ Если нужна помощь — нажми кнопку ниже или введи /help.",
+        "👋 Привет! Отправь скриншот или видео, и я найду аниме.\n"
+        "Для видео — 5 кадров, если не подойдёт, нажми «Нет, ищи другое» для новых.\n\n"
+        "❓ Помощь — /help",
         reply_markup=help_kb
     )
 
 @dp.message(Command('help'))
 async def help_command(message: Message):
     await message.reply(
-        "🤖 **Инструкция:**\n"
-        "1. Отправь скриншот (фото) или видео.\n"
-        "2. Я найду несколько вариантов (если есть).\n"
-        "3. Нажимай «Нет, ищи другое» для переключения.\n"
-        "   - Для видео: первый раз я использую кадры 5/20/50/70/95%.\n"
-        "   - Второй раз — 8/22/53/75/90%.\n"
-        "   - Далее — просто листаю найденные результаты.\n"
-        "4. Если ничего не найдено — попробуй другой файл.\n\n"
-        "🔗 В ответе я покажу ссылку на Shikimori (если найду ID).\n\n"
-        "📌 Команды:\n"
-        "/start — перезапустить бота\n"
+        "🤖 **Бот для поиска аниме по кадру**\n\n"
+        "📸 Отправьте скриншот или видео — я найду тайтл.\n"
+        "🎬 Для видео беру 5 кадров (5/20/50/70/95%).\n"
+        "🔄 Если результат не тот — нажмите «Нет, ищи другое».\n"
+        "   (для видео — второй набор кадров 8/22/53/75/90%)\n"
+        "🔗 В ответе даю ссылку на Shikimori.\n\n"
+        "Команды:\n"
+        "/start — начать заново\n"
         "/help — эта справка"
     )
 
+# --- Обработчик кнопки "Помощь" ---
 @dp.callback_query(lambda c: c.data == "help")
 async def process_help(callback: CallbackQuery):
     try:
         await callback.answer()
         await callback.message.answer(
-            "🤖 **Инструкция:**\n"
-            "1. Отправь скриншот или видео.\n"
-            "2. Я найду варианты.\n"
-            "3. Нажимай «Нет, ищи другое» для переключения.\n"
-            "   - Для видео: первый раз кадры 5/20/50/70/95%.\n"
-            "   - Второй раз — 8/22/53/75/90%.\n"
-            "   - Далее — просто листаю найденные результаты.\n"
-            "4. Если результат не тот — попробуй другой файл.\n\n"
-            "🔗 Ссылка на Shikimori будет в ответе."
+            "🤖 **Бот для поиска аниме по кадру**\n\n"
+            "📸 Отправьте скриншот или видео — я найду тайтл.\n"
+            "🎬 Для видео беру 5 кадров (5/20/50/70/95%).\n"
+            "🔄 Если результат не тот — нажмите «Нет, ищи другое».\n"
+            "   (для видео — второй набор кадров 8/22/53/75/90%)\n"
+            "🔗 В ответе даю ссылку на Shikimori.\n\n"
+            "Команды:\n"
+            "/start — начать заново\n"
+            "/help — эта справка"
         )
     except Exception as e:
         print(f"Ошибка в process_help: {e}")
 
+# --- Обработчик фото ---
 @dp.message(lambda msg: msg.photo is not None)
 async def handle_photo(message: Message, state: FSMContext):
     try:
         user_id = message.from_user.id
         now = time.time()
         if now - user_last_request[user_id] < REQUEST_INTERVAL:
-            await message.reply("⏳ Подожди немного, я ещё обрабатываю твой предыдущий запрос.")
+            await message.reply("⏳ Подожди немного.")
             return
         user_last_request[user_id] = now
 
@@ -204,7 +206,7 @@ async def handle_photo(message: Message, state: FSMContext):
         result = await search_by_frame(compressed)
 
         if not isinstance(result.get('result'), list) or len(result['result']) == 0:
-            await message.reply("😔 Ничего не найдено. Попробуй другой скриншот.")
+            await message.reply("😔 Ничего не найдено.")
             return
 
         cache_result(cache_key, {'result': result['result']})
@@ -212,18 +214,19 @@ async def handle_photo(message: Message, state: FSMContext):
         await show_result(message, state, 0)
 
     except asyncio.TimeoutError:
-        await message.reply("⏳ Сервис поиска долго отвечает. Попробуй позже.")
+        await message.reply("⏳ Сервис долго отвечает.")
     except Exception as e:
-        print(f"Ошибка в handle_photo:\n{traceback.format_exc()}")
-        await message.reply("⚠️ Что-то пошло не так. Попробуй другой скриншот или /start.")
+        print(f"Ошибка handle_photo:\n{traceback.format_exc()}")
+        await message.reply("⚠️ Ошибка, попробуй другой скриншот или /start")
 
+# --- Обработчик видео ---
 @dp.message(lambda msg: msg.video is not None)
 async def handle_video(message: Message, state: FSMContext):
     try:
         user_id = message.from_user.id
         now = time.time()
         if now - user_last_request[user_id] < REQUEST_INTERVAL:
-            await message.reply("⏳ Подожди немного, я ещё обрабатываю твой предыдущий запрос.")
+            await message.reply("⏳ Подожди немного.")
             return
         user_last_request[user_id] = now
 
@@ -248,7 +251,7 @@ async def handle_video(message: Message, state: FSMContext):
         os.unlink(video_path)
 
         if not frames:
-            await message.reply("⚠️ Не удалось извлечь кадры из видео.")
+            await message.reply("⚠️ Не удалось извлечь кадры.")
             return
 
         found_result = None
@@ -261,7 +264,7 @@ async def handle_video(message: Message, state: FSMContext):
             await asyncio.sleep(0.5)
 
         if not found_result:
-            await message.reply("😔 По этому видео ничего не найдено.")
+            await message.reply("😔 По видео ничего не найдено.")
             return
 
         cache_result(cache_key, {'result': found_result['result']})
@@ -269,9 +272,10 @@ async def handle_video(message: Message, state: FSMContext):
         await show_result(message, state, 0)
 
     except Exception as e:
-        print(f"Ошибка в handle_video:\n{traceback.format_exc()}")
-        await message.reply("⚠️ Не удалось обработать видео. Попробуй другой файл или скриншот.")
+        print(f"Ошибка handle_video:\n{traceback.format_exc()}")
+        await message.reply("⚠️ Ошибка, попробуй другой файл или /start")
 
+# --- Функция показа результата со ссылкой на Shikimori ---
 async def show_result(message: Message, state: FSMContext, idx: int):
     try:
         data = await state.get_data()
@@ -306,9 +310,10 @@ async def show_result(message: Message, state: FSMContext, idx: int):
         await state.update_data(index=idx)
 
     except Exception as e:
-        print(f"Ошибка в show_result: {e}")
-        await message.reply("⚠️ Ошибка отображения результата. Попробуй /start")
+        print(f"Ошибка show_result: {e}")
+        await message.reply("⚠️ Ошибка, попробуй /start")
 
+# --- Обработчик кнопки "Нет, ищи другое" ---
 @dp.callback_query(lambda c: c.data == "next")
 async def process_next(callback: CallbackQuery, state: FSMContext):
     try:
@@ -334,7 +339,7 @@ async def process_next(callback: CallbackQuery, state: FSMContext):
             os.unlink(video_path)
 
             if not frames:
-                await callback.message.edit_text("⚠️ Не удалось извлечь кадры из видео.")
+                await callback.message.edit_text("⚠️ Не удалось извлечь кадры.")
                 return
 
             found_result = None
@@ -347,7 +352,7 @@ async def process_next(callback: CallbackQuery, state: FSMContext):
                 await asyncio.sleep(0.5)
 
             if not found_result:
-                await callback.message.edit_text("😔 Второй набор кадров тоже ничего не дал. Попробуй другой файл.")
+                await callback.message.edit_text("😔 Второй набор кадров ничего не дал.")
                 await state.clear()
                 return
 
@@ -361,7 +366,7 @@ async def process_next(callback: CallbackQuery, state: FSMContext):
 
         next_idx = idx + 1
         if next_idx >= len(results):
-            await callback.message.edit_text("🏁 Это был последний результат. Попробуй другой файл.")
+            await callback.message.edit_text("🏁 Это был последний результат.")
             await state.clear()
             return
 
@@ -372,9 +377,10 @@ async def process_next(callback: CallbackQuery, state: FSMContext):
             pass
 
     except Exception as e:
-        print(f"Ошибка в process_next: {e}")
+        print(f"Ошибка process_next: {e}")
         await callback.message.answer("⚠️ Ошибка, попробуй /start")
 
+# --- Веб-сервер health-check ---
 async def handle_health(request):
     return web.Response(text="OK")
 
@@ -390,6 +396,7 @@ async def start_web_server():
     print(f"✅ Веб-сервер health-check запущен на порту {port}")
     await asyncio.Event().wait()
 
+# --- Запуск ---
 async def main():
     await set_default_commands()
     try:
