@@ -25,7 +25,8 @@ if not BOT_TOKEN:
     print("❌ BOT_TOKEN не задан")
     sys.exit(1)
 
-print("✅ Токен получен")
+ADMIN_ID = int(os.getenv('ADMIN_ID', '1528277045'))  # замените на ваш ID или задайте переменную
+print(f"✅ ID администратора: {ADMIN_ID}")
 
 try:
     subprocess.run(['ffmpeg', '-version'], capture_output=True, check=True)
@@ -37,9 +38,11 @@ except Exception:
 bot = Bot(token=BOT_TOKEN)
 dp = Dispatcher()
 
-user_data = {}
+user_data = {}          # {user_id: {...}}
+banned_users = set()    # {user_id}
 search_cache = {}
 CACHE_TTL = 3600
+total_requests = 0      # счётчик запросов к API
 
 def get_cache_key(data: bytes) -> str:
     return hashlib.md5(data).hexdigest()
@@ -143,6 +146,8 @@ def extract_frames_advanced(video_path: str, num_frames: int = 8) -> list:
 
 # --- API functions ---
 async def search_by_frame(image_bytes: bytes) -> dict:
+    global total_requests
+    total_requests += 1
     print(f"   🔍 Запрос к trace.moe, размер {len(image_bytes)} байт")
     async with aiohttp.ClientSession(timeout=aiohttp.ClientTimeout(total=30)) as session:
         data = aiohttp.FormData()
@@ -185,18 +190,34 @@ def parse_saucenao_result(data: dict) -> dict:
     except Exception:
         return None
 
+# --- Админ-функции ---
+def is_admin(user_id: int) -> bool:
+    return user_id == ADMIN_ID
+
+async def get_user_mention(user_id: int) -> str:
+    try:
+        user = await bot.get_chat(user_id)
+        name = user.first_name or user.username or str(user_id)
+        return f"[{name}](tg://user?id={user_id})"
+    except:
+        return str(user_id)
+
 # --- Команды и хендлеры ---
 async def set_default_commands():
     commands = [
         BotCommand(command="start", description="🚀 Запустить бота"),
         BotCommand(command="help", description="❓ Помощь"),
     ]
+    # добавляем админ-команды в список (они будут видны только админу, но Telegram не скрывает, так что просто добавим)
     await bot.set_my_commands(commands)
     print("✅ Меню команд установлено")
 
 @dp.message(Command('start'))
 async def start_command(message: Message):
     user_id = message.from_user.id
+    if user_id in banned_users:
+        await message.reply("⛔ Вы забанены. Обратитесь к администратору.")
+        return
     user_data.pop(user_id, None)
     print(f"📩 /start от {user_id}")
     await message.reply(
@@ -206,7 +227,11 @@ async def start_command(message: Message):
 
 @dp.message(Command('help'))
 async def help_command(message: Message):
-    print(f"📩 /help от {message.from_user.id}")
+    user_id = message.from_user.id
+    if user_id in banned_users:
+        await message.reply("⛔ Вы забанены.")
+        return
+    print(f"📩 /help от {user_id}")
     await message.reply(
         "🤖 **Бот для поиска аниме по кадру**\n\n"
         "📸 Отправьте скриншот или видео — я найду тайтл.\n"
@@ -215,9 +240,148 @@ async def help_command(message: Message):
         "Команды:\n/start — начать заново\n/help — эта справка"
     )
 
+# --- Админ-команды ---
+@dp.message(Command('admin'))
+async def admin_help(message: Message):
+    if not is_admin(message.from_user.id):
+        return
+    await message.reply(
+        "👑 **Админ-панель**\n\n"
+        "/stats — статистика\n"
+        "/clear_cache — очистить кеш\n"
+        "/broadcast <текст> — рассылка всем пользователям\n"
+        "/ban <user_id или @username> — заблокировать\n"
+        "/unban <user_id или @username> — разблокировать\n"
+        "/blocked — список заблокированных\n"
+        "/admin — эта справка"
+    )
+
+@dp.message(Command('stats'))
+async def stats_command(message: Message):
+    if not is_admin(message.from_user.id):
+        return
+    total_users = len(user_data)
+    cached = len(search_cache)
+    banned = len(banned_users)
+    await message.reply(
+        f"📊 **Статистика**\n"
+        f"👥 Всего пользователей: {total_users}\n"
+        f"🗄 Кеш: {cached} записей\n"
+        f"🚫 Забанено: {banned}\n"
+        f"📨 Всего запросов к API: {total_requests}"
+    )
+
+@dp.message(Command('clear_cache'))
+async def clear_cache_command(message: Message):
+    if not is_admin(message.from_user.id):
+        return
+    size_before = len(search_cache)
+    search_cache.clear()
+    await message.reply(f"🧹 Кеш очищен. Удалено {size_before} записей.")
+
+@dp.message(Command('broadcast'))
+async def broadcast_command(message: Message):
+    if not is_admin(message.from_user.id):
+        return
+    text = message.text.replace('/broadcast', '').strip()
+    if not text:
+        await message.reply("⚠️ Напишите текст рассылки: /broadcast <текст>")
+        return
+    users = list(user_data.keys())
+    if not users:
+        await message.reply("❌ Нет активных пользователей для рассылки.")
+        return
+    sent = 0
+    for uid in users:
+        try:
+            await bot.send_message(uid, f"📢 **Рассылка от администратора**\n\n{text}")
+            sent += 1
+            await asyncio.sleep(0.05)  # защита от флуда
+        except:
+            pass
+    await message.reply(f"✅ Рассылка отправлена {sent} пользователям из {len(users)}.")
+
+@dp.message(Command('ban'))
+async def ban_command(message: Message):
+    if not is_admin(message.from_user.id):
+        return
+    args = message.text.split(maxsplit=1)
+    if len(args) < 2:
+        await message.reply("⚠️ Укажите пользователя: /ban @username или /ban 123456789")
+        return
+    target = args[1].strip()
+    # пытаемся извлечь ID
+    user_id = None
+    if target.startswith('@'):
+        # по username
+        try:
+            chat = await bot.get_chat(target)
+            user_id = chat.id
+        except:
+            await message.reply("❌ Не удалось найти пользователя с таким username.")
+            return
+    elif target.isdigit():
+        user_id = int(target)
+    else:
+        await message.reply("❌ Неверный формат. Используйте @username или числовой ID.")
+        return
+    if user_id == ADMIN_ID:
+        await message.reply("❌ Нельзя забанить самого себя.")
+        return
+    banned_users.add(user_id)
+    mention = await get_user_mention(user_id)
+    await message.reply(f"✅ Пользователь {mention} забанен.")
+
+@dp.message(Command('unban'))
+async def unban_command(message: Message):
+    if not is_admin(message.from_user.id):
+        return
+    args = message.text.split(maxsplit=1)
+    if len(args) < 2:
+        await message.reply("⚠️ Укажите пользователя: /unban @username или /unban 123456789")
+        return
+    target = args[1].strip()
+    user_id = None
+    if target.startswith('@'):
+        try:
+            chat = await bot.get_chat(target)
+            user_id = chat.id
+        except:
+            await message.reply("❌ Не удалось найти пользователя с таким username.")
+            return
+    elif target.isdigit():
+        user_id = int(target)
+    else:
+        await message.reply("❌ Неверный формат.")
+        return
+    if user_id not in banned_users:
+        await message.reply("⚠️ Этот пользователь не забанен.")
+        return
+    banned_users.remove(user_id)
+    mention = await get_user_mention(user_id)
+    await message.reply(f"✅ Пользователь {mention} разбанен.")
+
+@dp.message(Command('blocked'))
+async def blocked_list(message: Message):
+    if not is_admin(message.from_user.id):
+        return
+    if not banned_users:
+        await message.reply("🚫 Нет забаненных пользователей.")
+        return
+    lines = []
+    for uid in list(banned_users):
+        mention = await get_user_mention(uid)
+        lines.append(f"• {mention}")
+    await message.reply("🚫 **Забаненные пользователи:**\n\n" + "\n".join(lines))
+
+# --- Основные хендлеры ---
 @dp.callback_query(lambda c: c.data == "help")
 async def process_help(callback: CallbackQuery):
-    print(f"📩 Кнопка помощи от {callback.from_user.id}")
+    user_id = callback.from_user.id
+    if user_id in banned_users:
+        await callback.answer("⛔ Вы забанены.")
+        return
+    print(f"📩 Кнопка помощи от {user_id}")
     try:
         await callback.answer()
         await callback.message.answer(
@@ -232,6 +396,9 @@ async def process_help(callback: CallbackQuery):
 @dp.message(lambda msg: msg.photo is not None)
 async def handle_photo(message: Message):
     user_id = message.from_user.id
+    if user_id in banned_users:
+        await message.reply("⛔ Вы забанены.")
+        return
     print(f"📸 Обработка фото от {user_id}")
     user_data.pop(user_id, None)
     try:
@@ -294,6 +461,9 @@ async def handle_photo(message: Message):
 @dp.message(lambda msg: msg.video is not None)
 async def handle_video(message: Message):
     user_id = message.from_user.id
+    if user_id in banned_users:
+        await message.reply("⛔ Вы забанены.")
+        return
     print(f"🎬 Обработка видео от {user_id}")
     user_data.pop(user_id, None)
     try:
@@ -337,7 +507,6 @@ async def handle_video(message: Message):
             await message.reply("⚠️ Не удалось извлечь кадры из видео.")
             return
 
-        # --- Быстрый поиск через trace.moe (первые 3 кадра) ---
         found_result = None
         for idx, frame_bytes in enumerate(frames[:3]):
             print(f"   🔍 trace.moe кадр {idx+1}/3")
@@ -349,7 +518,6 @@ async def handle_video(message: Message):
                     break
             await asyncio.sleep(0.2)
 
-        # --- Если не нашёл, пробуем SauceNAO (1 кадр) ---
         if not found_result:
             print("   🔄 trace.moe не нашёл, пробуем SauceNAO (1 кадр)...")
             mid_frame = frames[len(frames)//2]
@@ -371,7 +539,6 @@ async def handle_video(message: Message):
                     if url:
                         answer += f"\n🔗 [Ссылка]({url})"
                     await message.reply(answer)
-                    # сохраняем результат (не для переключения, но для кеша)
                     user_data[user_id] = {
                         'results': [{'title': title, 'similarity': similarity/100, 'url': url, 'from': 0, 'episode': 'неизвестно'}],
                         'index': 0,
@@ -386,7 +553,6 @@ async def handle_video(message: Message):
                 await message.reply("⏳ SauceNAO долго отвечает, попробуй позже.")
                 return
 
-        # --- Если нашли через trace.moe ---
         results_list = found_result['result']
         if not results_list or not isinstance(results_list[0], dict):
             await message.reply("⚠️ Неверный формат данных от сервиса.")
@@ -428,7 +594,6 @@ async def show_result(message: Message, user_id: int):
 
         best = results[idx]
 
-        # Проверка: результат от SauceNAO (нет поля anilist)
         if 'anilist' not in best:
             name = best.get('title', 'Неизвестно')
             similarity = best.get('similarity', 0.0) * 100
@@ -444,7 +609,6 @@ async def show_result(message: Message, user_id: int):
             user_data[user_id]['index'] = idx
             return
 
-        # Обычный результат от trace.moe
         name = safe_get_title(best)
         episode = best.get('episode', 'неизвестно')
         from_time = best.get('from', 0.0)
@@ -475,6 +639,9 @@ async def show_result(message: Message, user_id: int):
 @dp.callback_query(lambda c: c.data == "next")
 async def process_next(callback: CallbackQuery):
     user_id = callback.from_user.id
+    if user_id in banned_users:
+        await callback.answer("⛔ Вы забанены.")
+        return
     print(f"🔄 Нажата 'Нет, ищи другое' от {user_id}")
     try:
         await callback.answer()
