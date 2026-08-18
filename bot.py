@@ -76,28 +76,31 @@ def format_time(seconds: float) -> str:
     secs = int(seconds % 60)
     return f"{minutes} мин {secs} сек"
 
-def extract_title(best: dict) -> str:
-    """
-    Надёжно извлекает название аниме из ответа trace.moe.
-    Поддерживает разные форматы поля 'anilist'.
-    """
+def safe_get_title(best: dict) -> str:
     try:
-        # Сначала пробуем получить название из поля 'title', если оно есть
         if 'title' in best and isinstance(best['title'], dict):
             title = best['title']
             return title.get('romaji') or title.get('english') or title.get('native') or best.get('filename', 'Неизвестно')
-        
-        # Если поле 'anilist' — словарь, извлекаем оттуда
         anilist = best.get('anilist')
-        if isinstance(anilist, dict) and 'title' in anilist:
-            title = anilist['title']
+        if isinstance(anilist, dict):
+            title = anilist.get('title', {})
             if isinstance(title, dict):
                 return title.get('romaji') or title.get('english') or title.get('native') or best.get('filename', 'Неизвестно')
-        
-        # Если ничего не помогло — используем имя файла
         return best.get('filename', 'Неизвестно')
     except Exception:
         return "Неизвестно"
+
+def safe_get_anilist_id(best: dict):
+    try:
+        anilist = best.get('anilist')
+        if isinstance(anilist, dict):
+            return anilist.get('id')
+        elif isinstance(anilist, int):
+            return anilist
+        else:
+            return None
+    except Exception:
+        return None
 
 def compress_image(image_bytes: bytes, max_size: int = 800) -> bytes:
     print(f"   🖼️ Размер фото: {len(image_bytes)} байт")
@@ -170,7 +173,7 @@ async def help_command(message: Message):
         "🤖 **Бот для поиска аниме по кадру**\n\n"
         "📸 Отправьте скриншот или видео — я найду тайтл.\n"
         "🔄 Если результат не тот — нажмите «Нет, ищи другое».\n"
-        "🔗 В ответе даю ссылку на Shikimori.\n\n"
+        "🔗 В ответе даю ссылку на AniList (точный ID).\n\n"
         "Команды:\n/start — начать заново\n/help — эта справка"
     )
 
@@ -183,7 +186,7 @@ async def process_help(callback: CallbackQuery):
             "🤖 **Бот для поиска аниме по кадру**\n\n"
             "📸 Отправьте скриншот или видео — я найду тайтл.\n"
             "🔄 Если результат не тот — нажмите «Нет, ищи другое».\n"
-            "🔗 В ответе даю ссылку на Shikimori."
+            "🔗 В ответе даю ссылку на AniList (точный ID)."
         )
     except Exception as e:
         print(f"❌ Ошибка process_help: {e}")
@@ -351,16 +354,15 @@ async def show_result(message: Message, user_id: int):
             return
 
         best = results[idx]
-        name = extract_title(best)
+        name = safe_get_title(best)
         episode = best.get('episode', 'неизвестно')
         from_time = best.get('from', 0.0)
         similarity = best.get('similarity', 0.0) * 100
         time_str = format_time(from_time)
 
-        anilist_id = best.get('anilist', {})
-        if isinstance(anilist_id, dict):
-            anilist_id = anilist_id.get('id')
-        shikimori_url = f"https://shikimori.one/animes/{anilist_id}" if anilist_id else None
+        anilist_id = safe_get_anilist_id(best)
+        # Ссылка на AniList (гарантированно работает)
+        anilist_url = f"https://anilist.co/anime/{anilist_id}" if anilist_id else None
 
         answer = (
             f"✅ Найдено!\n"
@@ -370,8 +372,8 @@ async def show_result(message: Message, user_id: int):
             f"🎯 Точность: {similarity:.2f}%\n"
             f"({idx+1}/{len(results)})"
         )
-        if shikimori_url:
-            answer += f"\n\n🔗 [Смотреть на Shikimori]({shikimori_url})"
+        if anilist_url:
+            answer += f"\n\n🔗 [Смотреть на AniList]({anilist_url})"
 
         await message.reply(answer, reply_markup=next_kb)
         user_data[user_id]['index'] = idx
