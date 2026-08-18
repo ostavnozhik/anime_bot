@@ -160,7 +160,6 @@ async def set_default_commands():
 @dp.message(Command('start'))
 async def start_command(message: Message, state: FSMContext):
     print(f"📩 /start от {message.from_user.id}")
-    # Полная очистка состояния
     await state.clear()
     await message.reply(
         "👋 Привет! Отправь скриншот или видео, и я найду аниме.\n\n❓ Помощь — /help",
@@ -204,6 +203,13 @@ async def handle_photo(message: Message, state: FSMContext):
             return
         user_last_request[user_id] = now
 
+        # Проверяем состояние и очищаем, если оно повреждено
+        data = await state.get_data()
+        if 'results' in data:
+            if not isinstance(data['results'], list) or not data['results'] or not isinstance(data['results'][0], dict):
+                print("   ⚠️ Повреждённое состояние, очищаем...")
+                await state.clear()
+
         photo = message.photo[-1]
         file = await bot.get_file(photo.file_id)
         file_bytes = await bot.download_file(file.file_path)
@@ -214,7 +220,7 @@ async def handle_photo(message: Message, state: FSMContext):
         cached = await get_cached_result(cache_key)
         if cached:
             print("   ♻️ Используем кеш")
-            # Полная замена состояния
+            # Полная перезапись состояния
             await state.clear()
             await state.update_data(results=cached['result'], index=0, video_bytes=None, search_count=0)
             await show_result(message, state, 0)
@@ -232,7 +238,6 @@ async def handle_photo(message: Message, state: FSMContext):
             return
 
         results_list = result['result']
-        # Проверка, что это список словарей
         if not results_list or not isinstance(results_list[0], dict):
             await message.reply("⚠️ Неверный формат данных от сервиса.")
             return
@@ -260,8 +265,14 @@ async def handle_video(message: Message, state: FSMContext):
             return
         user_last_request[user_id] = now
 
+        # Проверяем состояние и очищаем, если оно повреждено
+        data = await state.get_data()
+        if 'results' in data:
+            if not isinstance(data['results'], list) or not data['results'] or not isinstance(data['results'][0], dict):
+                print("   ⚠️ Повреждённое состояние, очищаем...")
+                await state.clear()
+
         video = message.video
-        # Проверка размера файла (Telegram Bot API ограничение 20 МБ)
         if video.file_size > 20 * 1024 * 1024:
             await message.reply("⚠️ Видео слишком большое (максимум 20 МБ).")
             return
@@ -320,13 +331,13 @@ async def handle_video(message: Message, state: FSMContext):
         print(f"❌ Ошибка handle_video:\n{traceback.format_exc()}")
         await message.reply("⚠️ Ошибка, попробуй другой файл или /start")
 
-# --- Функция показа результата с защитой от некорректных данных ---
+# --- Функция показа результата ---
 async def show_result(message: Message, state: FSMContext, idx: int):
     print(f"📤 Показ результата {idx+1}")
     try:
         data = await state.get_data()
         results = data.get('results')
-        # Проверяем, что results — это список и его элементы — словари
+        # Проверяем, что results — это список словарей
         if not isinstance(results, list) or not results or not isinstance(results[0], dict):
             print(f"❌ Некорректные данные в состоянии: {type(results)}, {results[:3] if isinstance(results, list) else results}")
             await message.reply("⚠️ Ошибка данных. Попробуй /start заново.")
@@ -360,7 +371,6 @@ async def show_result(message: Message, state: FSMContext, idx: int):
             answer += f"\n\n🔗 [Смотреть на Shikimori]({shikimori_url})"
 
         await message.reply(answer, reply_markup=next_kb)
-        # Обновляем только индекс, остальное не трогаем
         await state.update_data(index=idx)
 
     except Exception as e:
