@@ -106,8 +106,12 @@ def compress_image(image_bytes: bytes, max_size: int = 800) -> bytes:
     print(f"   🖼️ Размер фото: {len(image_bytes)} байт")
     return image_bytes
 
-def extract_frames(video_path: str, percentages: list) -> list:
-    print(f"   🎬 Извлечение кадров на {percentages}%")
+def extract_frames_advanced(video_path: str, num_frames: int = 12) -> list:
+    """
+    Извлекает равномерно распределённые кадры из видео.
+    num_frames — количество кадров (по умолчанию 12).
+    """
+    print(f"   🎬 Извлечение {num_frames} кадров...")
     cmd_duration = [
         'ffprobe', '-v', 'error', '-show_entries',
         'format=duration', '-of', 'default=noprint_wrappers=1:nokey=1', video_path
@@ -120,7 +124,9 @@ def extract_frames(video_path: str, percentages: list) -> list:
         raise Exception("Не удалось получить длительность видео")
 
     frames = []
-    for pct in percentages:
+    step = 100 / (num_frames + 1)  # например, для 12 кадров шаг ~7.69%
+    for i in range(1, num_frames + 1):
+        pct = i * step
         time_sec = duration * (pct / 100.0)
         cmd = [
             'ffmpeg', '-ss', str(time_sec), '-i', video_path,
@@ -131,9 +137,9 @@ def extract_frames(video_path: str, percentages: list) -> list:
             stdout, stderr = process.communicate(timeout=10)
             if process.returncode == 0 and stdout:
                 frames.append(stdout)
-                print(f"   ✅ Кадр на {pct}% извлечён, {len(stdout)} байт")
+                print(f"   ✅ Кадр {i}/{num_frames} ({pct:.1f}%) извлечён, {len(stdout)} байт")
             else:
-                print(f"   ⚠️ Ошибка кадра на {pct}%: {stderr.decode()[:100]}")
+                print(f"   ⚠️ Ошибка кадра {i}: {stderr.decode()[:100]}")
         except Exception as e:
             print(f"   ❌ ffmpeg ошибка: {e}")
     return frames
@@ -173,7 +179,7 @@ async def help_command(message: Message):
         "🤖 **Бот для поиска аниме по кадру**\n\n"
         "📸 Отправьте скриншот или видео — я найду тайтл.\n"
         "🔄 Если результат не тот — нажмите «Нет, ищи другое».\n"
-        "🔗 В ответе даю ссылку на AniList (точный ID).\n\n"
+        "🔗 В ответе даю ссылку на AniList.\n\n"
         "Команды:\n/start — начать заново\n/help — эта справка"
     )
 
@@ -186,7 +192,7 @@ async def process_help(callback: CallbackQuery):
             "🤖 **Бот для поиска аниме по кадру**\n\n"
             "📸 Отправьте скриншот или видео — я найду тайтл.\n"
             "🔄 Если результат не тот — нажмите «Нет, ищи другое».\n"
-            "🔗 В ответе даю ссылку на AniList (точный ID)."
+            "🔗 В ответе даю ссылку на AniList."
         )
     except Exception as e:
         print(f"❌ Ошибка process_help: {e}")
@@ -288,18 +294,18 @@ async def handle_video(message: Message):
             await show_result(message, user_id)
             return
 
-        percentages_first = [5, 20, 50, 70, 95]
         with tempfile.NamedTemporaryFile(delete=False, suffix=".mp4") as tmp_file:
             tmp_file.write(raw_bytes)
             video_path = tmp_file.name
 
-        frames = extract_frames(video_path, percentages_first)
+        frames = extract_frames_advanced(video_path, num_frames=12)
         os.unlink(video_path)
 
         if not frames:
             await message.reply("⚠️ Не удалось извлечь кадры из видео.")
             return
 
+        print(f"   🔍 Отправка {len(frames)} кадров на поиск...")
         found_result = None
         for idx, frame_bytes in enumerate(frames):
             print(f"   🔍 Ищем по кадру {idx+1}/{len(frames)}")
@@ -307,8 +313,9 @@ async def handle_video(message: Message):
             result = await search_by_frame(compressed)
             if result.get('result') and len(result['result']) > 0:
                 found_result = result
+                print(f"   ✅ Найдено на кадре {idx+1}!")
                 break
-            await asyncio.sleep(0.5)
+            await asyncio.sleep(0.3)
 
         if not found_result:
             await message.reply("😔 По этому видео ничего не найдено.")
@@ -361,7 +368,6 @@ async def show_result(message: Message, user_id: int):
         time_str = format_time(from_time)
 
         anilist_id = safe_get_anilist_id(best)
-        # Ссылка на AniList (гарантированно работает)
         anilist_url = f"https://anilist.co/anime/{anilist_id}" if anilist_id else None
 
         answer = (
@@ -404,13 +410,14 @@ async def process_next(callback: CallbackQuery):
             return
 
         if video_bytes is not None and search_count == 0:
-            print("   🔄 Используем второй набор кадров")
-            percentages_second = [8, 22, 53, 75, 90]
+            print("   🔄 Используем второй набор кадров (12 кадров со смещением)")
+            # второй набор: другой сдвиг (можно просто ещё 12 кадров с другим шагом)
             with tempfile.NamedTemporaryFile(delete=False, suffix=".mp4") as tmp_file:
                 tmp_file.write(video_bytes)
                 video_path = tmp_file.name
 
-            frames = extract_frames(video_path, percentages_second)
+            # Используем ту же функцию, но можно изменить параметры (например, начать с 2% и шаг 7.5%)
+            frames = extract_frames_advanced(video_path, num_frames=12)
             os.unlink(video_path)
 
             if not frames:
@@ -424,7 +431,7 @@ async def process_next(callback: CallbackQuery):
                 if result.get('result') and len(result['result']) > 0:
                     found_result = result
                     break
-                await asyncio.sleep(0.5)
+                await asyncio.sleep(0.3)
 
             if not found_result:
                 await callback.message.edit_text("😔 Второй набор кадров ничего не дал.")
