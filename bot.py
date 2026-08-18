@@ -25,6 +25,14 @@ if not BOT_TOKEN:
     print("❌ BOT_TOKEN не задан")
     sys.exit(1)
 
+# --- Диагностика ffmpeg ---
+try:
+    result = subprocess.run(['ffmpeg', '-version'], capture_output=True, text=True, timeout=5)
+    print("✅ FFmpeg доступен:", result.stdout[:200])
+except Exception as e:
+    print("❌ FFmpeg НЕ ДОСТУПЕН:", e)
+    sys.exit(1)
+
 storage = MemoryStorage()
 bot = Bot(token=BOT_TOKEN)
 dp = Dispatcher(storage=storage)
@@ -37,7 +45,7 @@ class SearchState(StatesGroup):
 
 # --- Кеш ---
 search_cache = {}
-CACHE_TTL = 3600  # 1 час
+CACHE_TTL = 3600
 
 def get_cache_key(data: bytes) -> str:
     return hashlib.md5(data).hexdigest()
@@ -56,7 +64,7 @@ def cache_result(key: str, result):
 
 # --- Троттлинг ---
 user_last_request = defaultdict(float)
-REQUEST_INTERVAL = 3  # секунды между запросами от одного пользователя
+REQUEST_INTERVAL = 3
 
 # --- Клавиатуры ---
 help_kb = InlineKeyboardMarkup(
@@ -88,32 +96,34 @@ def extract_title(best: dict) -> str:
     except Exception:
         return "Неизвестно"
 
+# !!! ВРЕМЕННО ОТКЛЮЧАЕМ СЖАТИЕ ДЛЯ ТЕСТА !!!
 def compress_image(image_bytes: bytes, max_size: int = 800) -> bytes:
-    try:
-        img = Image.open(io.BytesIO(image_bytes))
-        if max(img.size) > max_size:
-            ratio = max_size / max(img.size)
-            new_size = (int(img.size[0] * ratio), int(img.size[1] * ratio))
-            img = img.resize(new_size, Image.Resampling.LANCZOS)
-        buffer = io.BytesIO()
-        img.save(buffer, format='JPEG', quality=85, optimize=True)
-        return buffer.getvalue()
-    except Exception:
-        return image_bytes
+    # Для теста просто возвращаем оригинал без сжатия
+    print("🔍 Сжатие отключено (тестовый режим)")
+    return image_bytes
+    # Раскомментируйте ниже, если хотите вернуть сжатие позже
+    # try:
+    #     img = Image.open(io.BytesIO(image_bytes))
+    #     if max(img.size) > max_size:
+    #         ratio = max_size / max(img.size)
+    #         new_size = (int(img.size[0] * ratio), int(img.size[1] * ratio))
+    #         img = img.resize(new_size, Image.Resampling.LANCZOS)
+    #     buffer = io.BytesIO()
+    #     img.save(buffer, format='JPEG', quality=85, optimize=True)
+    #     return buffer.getvalue()
+    # except Exception:
+    #     return image_bytes
 
 def extract_frames(video_path: str, percentages: list) -> list:
-    """
-    Извлекает кадры из видео на указанных процентах через ffmpeg.
-    Возвращает список байтов JPEG.
-    """
-    # Получаем длительность видео
+    """Извлекает кадры через ffmpeg."""
     cmd_duration = [
         'ffprobe', '-v', 'error', '-show_entries',
         'format=duration', '-of', 'default=noprint_wrappers=1:nokey=1', video_path
     ]
     try:
         duration = float(subprocess.check_output(cmd_duration, text=True).strip())
-    except Exception:
+    except Exception as e:
+        print(f"Ошибка получения длительности: {e}")
         raise Exception("Не удалось получить длительность видео")
 
     frames = []
@@ -126,23 +136,27 @@ def extract_frames(video_path: str, percentages: list) -> list:
         try:
             process = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
             stdout, stderr = process.communicate(timeout=10)
-            if process.returncode == 0:
+            if process.returncode == 0 and stdout:
                 frames.append(stdout)
+                print(f"✅ Кадр на {pct}% извлечён, размер {len(stdout)} байт")
             else:
-                print(f"Ошибка ffmpeg: {stderr.decode()}")
+                print(f"⚠️ Не удалось извлечь кадр на {pct}%: {stderr.decode()[:100]}")
         except Exception as e:
-            print(f"Ошибка при извлечении кадра: {e}")
+            print(f"Ошибка ffmpeg: {e}")
             continue
     return frames
 
 async def search_by_frame(image_bytes: bytes) -> dict:
     async with aiohttp.ClientSession(timeout=aiohttp.ClientTimeout(total=30)) as session:
         data = aiohttp.FormData()
-        data.add_field('image', image_bytes, filename='frame.jpg')
+        data.add_field('image', image_bytes, filename='screenshot.jpg')
         async with session.post('https://api.trace.moe/search', data=data) as resp:
-            return await resp.json()
+            result = await resp.json()
+            # Полный лог ответа
+            print(f"📨 Ответ trace.moe: {json.dumps(result, indent=2, ensure_ascii=False)}")
+            return result
 
-# --- Установка команд для меню Telegram ---
+# --- Установка команд меню ---
 async def set_default_commands():
     commands = [
         BotCommand(command="start", description="🚀 Запустить бота"),
@@ -173,7 +187,6 @@ async def help_command(message: Message):
         "/help — эта справка"
     )
 
-# --- Обработчик кнопки "Помощь" ---
 @dp.callback_query(lambda c: c.data == "help")
 async def process_help(callback: CallbackQuery):
     try:
@@ -197,7 +210,7 @@ async def handle_photo(message: Message, state: FSMContext):
         user_id = message.from_user.id
         now = time.time()
         if now - user_last_request[user_id] < REQUEST_INTERVAL:
-            await message.reply("⏳ Подожди немного, я ещё обрабатываю твой предыдущий запрос.")
+            await message.reply("⏳ Подожди немного.")
             return
         user_last_request[user_id] = now
 
@@ -213,8 +226,13 @@ async def handle_photo(message: Message, state: FSMContext):
             await show_result(message, state, 0)
             return
 
+        # Без сжатия
         compressed = compress_image(raw_bytes)
         result = await search_by_frame(compressed)
+
+        if result.get('error'):
+            await message.reply(f"⚠️ Ошибка API: {result['error']}")
+            return
 
         if not isinstance(result.get('result'), list) or len(result['result']) == 0:
             await message.reply("😔 Ничего не найдено. Попробуй другой скриншот.")
@@ -225,7 +243,7 @@ async def handle_photo(message: Message, state: FSMContext):
         await show_result(message, state, 0)
 
     except asyncio.TimeoutError:
-        await message.reply("⏳ Сервис поиска долго отвечает. Попробуй позже.")
+        await message.reply("⏳ Сервис поиска долго отвечает.")
     except Exception as e:
         print(f"Ошибка handle_photo:\n{traceback.format_exc()}")
         await message.reply("⚠️ Ошибка, попробуй другой скриншот или /start")
@@ -237,7 +255,7 @@ async def handle_video(message: Message, state: FSMContext):
         user_id = message.from_user.id
         now = time.time()
         if now - user_last_request[user_id] < REQUEST_INTERVAL:
-            await message.reply("⏳ Подожди немного, я ещё обрабатываю твой предыдущий запрос.")
+            await message.reply("⏳ Подожди немного.")
             return
         user_last_request[user_id] = now
 
@@ -266,7 +284,7 @@ async def handle_video(message: Message, state: FSMContext):
             return
 
         found_result = None
-        for frame_bytes in frames:
+        for idx, frame_bytes in enumerate(frames):
             compressed = compress_image(frame_bytes)
             result = await search_by_frame(compressed)
             if result.get('result') and len(result['result']) > 0:
@@ -286,7 +304,7 @@ async def handle_video(message: Message, state: FSMContext):
         print(f"Ошибка handle_video:\n{traceback.format_exc()}")
         await message.reply("⚠️ Ошибка, попробуй другой файл или /start")
 
-# --- Функция показа результата (со ссылкой на Shikimori) ---
+# --- Функция показа результата ---
 async def show_result(message: Message, state: FSMContext, idx: int):
     try:
         data = await state.get_data()
@@ -324,7 +342,7 @@ async def show_result(message: Message, state: FSMContext, idx: int):
         print(f"Ошибка show_result: {e}")
         await message.reply("⚠️ Ошибка, попробуй /start")
 
-# --- Обработчик кнопки "Нет, ищи другое" (с поддержкой двух наборов кадров) ---
+# --- Кнопка "Нет, ищи другое" ---
 @dp.callback_query(lambda c: c.data == "next")
 async def process_next(callback: CallbackQuery, state: FSMContext):
     try:
@@ -340,7 +358,6 @@ async def process_next(callback: CallbackQuery, state: FSMContext):
             await state.clear()
             return
 
-        # Если видео и это первый поиск — используем второй набор кадров
         if video_bytes is not None and search_count == 0:
             percentages_second = [8, 22, 53, 75, 90]
             with tempfile.NamedTemporaryFile(delete=False, suffix=".mp4") as tmp_file:
@@ -351,7 +368,7 @@ async def process_next(callback: CallbackQuery, state: FSMContext):
             os.unlink(video_path)
 
             if not frames:
-                await callback.message.edit_text("⚠️ Не удалось извлечь кадры из видео.")
+                await callback.message.edit_text("⚠️ Не удалось извлечь кадры.")
                 return
 
             found_result = None
@@ -364,11 +381,10 @@ async def process_next(callback: CallbackQuery, state: FSMContext):
                 await asyncio.sleep(0.5)
 
             if not found_result:
-                await callback.message.edit_text("😔 Второй набор кадров тоже ничего не дал. Попробуй другой файл.")
+                await callback.message.edit_text("😔 Второй набор кадров ничего не дал.")
                 await state.clear()
                 return
 
-            # Заменяем старые результаты новыми
             await state.update_data(results=found_result['result'], index=0, search_count=1)
             await show_result(callback.message, state, 0)
             try:
@@ -377,10 +393,9 @@ async def process_next(callback: CallbackQuery, state: FSMContext):
                 pass
             return
 
-        # Иначе просто переключаем по списку
         next_idx = idx + 1
         if next_idx >= len(results):
-            await callback.message.edit_text("🏁 Это был последний результат. Попробуй другой файл.")
+            await callback.message.edit_text("🏁 Это был последний результат.")
             await state.clear()
             return
 
@@ -394,7 +409,7 @@ async def process_next(callback: CallbackQuery, state: FSMContext):
         print(f"Ошибка process_next: {e}")
         await callback.message.answer("⚠️ Ошибка, попробуй /start")
 
-# --- Веб-сервер для health-check (чтобы Render не убивал процесс) ---
+# --- Веб-сервер health-check ---
 async def handle_health(request):
     return web.Response(text="OK")
 
@@ -410,7 +425,7 @@ async def start_web_server():
     print(f"✅ Веб-сервер health-check запущен на порту {port}")
     await asyncio.Event().wait()
 
-# --- Запуск бота и веб-сервера ---
+# --- Запуск ---
 async def main():
     await set_default_commands()
     try:
