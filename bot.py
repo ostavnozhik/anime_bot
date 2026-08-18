@@ -25,7 +25,7 @@ if not BOT_TOKEN:
     print("❌ BOT_TOKEN не задан")
     sys.exit(1)
 
-ADMIN_ID = int(os.getenv('ADMIN_ID', '1528277045'))  # замените на ваш ID или задайте переменную
+ADMIN_ID = int(os.getenv('ADMIN_ID', '1528277045'))  # замените на свой ID
 print(f"✅ ID администратора: {ADMIN_ID}")
 
 try:
@@ -42,7 +42,20 @@ user_data = {}          # {user_id: {...}}
 banned_users = set()    # {user_id}
 search_cache = {}
 CACHE_TTL = 3600
-total_requests = 0      # счётчик запросов к API
+total_requests = 0
+search_history = defaultdict(list)  # {user_id: [{'time':..., 'type':..., 'result':...}]}
+MAX_HISTORY = 20
+
+def add_history(user_id: int, file_type: str, result: str = None):
+    entry = {
+        'time': time.time(),
+        'type': file_type,
+        'result': result or 'Ничего не найдено'
+    }
+    history = search_history[user_id]
+    history.append(entry)
+    if len(history) > MAX_HISTORY:
+        history.pop(0)
 
 def get_cache_key(data: bytes) -> str:
     return hashlib.md5(data).hexdigest()
@@ -202,13 +215,13 @@ async def get_user_mention(user_id: int) -> str:
     except:
         return str(user_id)
 
-# --- Команды и хендлеры ---
+# --- Команды ---
 async def set_default_commands():
     commands = [
         BotCommand(command="start", description="🚀 Запустить бота"),
         BotCommand(command="help", description="❓ Помощь"),
+        BotCommand(command="history", description="📋 Моя история запросов"),
     ]
-    # добавляем админ-команды в список (они будут видны только админу, но Telegram не скрывает, так что просто добавим)
     await bot.set_my_commands(commands)
     print("✅ Меню команд установлено")
 
@@ -237,8 +250,22 @@ async def help_command(message: Message):
         "📸 Отправьте скриншот или видео — я найду тайтл.\n"
         "🔄 Если результат не тот — нажмите «Нет, ищи другое».\n"
         "🔗 В ответе даю ссылку на AniList.\n\n"
-        "Команды:\n/start — начать заново\n/help — эта справка"
+        "📋 Команда /history — показать ваши последние запросы."
     )
+
+@dp.message(Command('history'))
+async def history_command(message: Message):
+    user_id = message.from_user.id
+    history = search_history.get(user_id, [])
+    if not history:
+        await message.reply("📭 У вас пока нет запросов.")
+        return
+    lines = []
+    for i, entry in enumerate(history[-10:], 1):
+        dt = time.strftime('%d.%m %H:%M', time.localtime(entry['time']))
+        result = entry['result'][:30] + '…' if len(entry['result']) > 30 else entry['result']
+        lines.append(f"{i}. {dt} [{entry['type']}] {result}")
+    await message.reply("📋 **Ваша история запросов (последние 10):**\n\n" + "\n".join(lines))
 
 # --- Админ-команды ---
 @dp.message(Command('admin'))
@@ -249,10 +276,11 @@ async def admin_help(message: Message):
         "👑 **Админ-панель**\n\n"
         "/stats — статистика\n"
         "/clear_cache — очистить кеш\n"
-        "/broadcast <текст> — рассылка всем пользователям\n"
-        "/ban <user_id или @username> — заблокировать\n"
-        "/unban <user_id или @username> — разблокировать\n"
-        "/blocked — список заблокированных\n"
+        "/broadcast <текст> — рассылка\n"
+        "/ban <@username или ID> — заблокировать\n"
+        "/unban <@username или ID> — разблокировать\n"
+        "/blocked — список забаненных\n"
+        "/user_history <ID> — история пользователя\n"
         "/admin — эта справка"
     )
 
@@ -296,7 +324,7 @@ async def broadcast_command(message: Message):
         try:
             await bot.send_message(uid, f"📢 **Рассылка от администратора**\n\n{text}")
             sent += 1
-            await asyncio.sleep(0.05)  # защита от флуда
+            await asyncio.sleep(0.05)
         except:
             pass
     await message.reply(f"✅ Рассылка отправлена {sent} пользователям из {len(users)}.")
@@ -310,10 +338,8 @@ async def ban_command(message: Message):
         await message.reply("⚠️ Укажите пользователя: /ban @username или /ban 123456789")
         return
     target = args[1].strip()
-    # пытаемся извлечь ID
     user_id = None
     if target.startswith('@'):
-        # по username
         try:
             chat = await bot.get_chat(target)
             user_id = chat.id
@@ -374,6 +400,30 @@ async def blocked_list(message: Message):
         lines.append(f"• {mention}")
     await message.reply("🚫 **Забаненные пользователи:**\n\n" + "\n".join(lines))
 
+@dp.message(Command('user_history'))
+async def user_history_command(message: Message):
+    if not is_admin(message.from_user.id):
+        return
+    args = message.text.split(maxsplit=1)
+    if len(args) < 2:
+        await message.reply("⚠️ Укажите ID пользователя: /user_history 123456789")
+        return
+    try:
+        target_id = int(args[1])
+    except:
+        await message.reply("❌ ID должен быть числом.")
+        return
+    history = search_history.get(target_id, [])
+    if not history:
+        await message.reply(f"📭 У пользователя {target_id} нет запросов.")
+        return
+    lines = []
+    for i, entry in enumerate(history[-20:], 1):
+        dt = time.strftime('%d.%m %H:%M', time.localtime(entry['time']))
+        result = entry['result'][:30] + '…' if len(entry['result']) > 30 else entry['result']
+        lines.append(f"{i}. {dt} [{entry['type']}] {result}")
+    await message.reply(f"📋 **История пользователя {target_id} (последние 20):**\n\n" + "\n".join(lines))
+
 # --- Основные хендлеры ---
 @dp.callback_query(lambda c: c.data == "help")
 async def process_help(callback: CallbackQuery):
@@ -424,6 +474,9 @@ async def handle_photo(message: Message):
                 'video_bytes': None,
                 'search_count': 0
             }
+            # Запись в историю (берём название из кеша)
+            title = safe_get_title(cached['result'][0]) if cached['result'] else None
+            add_history(user_id, 'фото', title)
             await show_result(message, user_id)
             return
 
@@ -435,6 +488,7 @@ async def handle_photo(message: Message):
             return
 
         if not isinstance(result.get('result'), list) or len(result['result']) == 0:
+            add_history(user_id, 'фото', None)
             await message.reply("😔 Ничего не найдено. Попробуй другой скриншот.")
             return
 
@@ -443,6 +497,7 @@ async def handle_photo(message: Message):
             await message.reply("⚠️ Неверный формат данных от сервиса.")
             return
 
+        title = safe_get_title(results_list[0])
         cache_result(cache_key, {'result': results_list})
         user_data[user_id] = {
             'results': results_list,
@@ -450,6 +505,7 @@ async def handle_photo(message: Message):
             'video_bytes': None,
             'search_count': 0
         }
+        add_history(user_id, 'фото', title)
         await show_result(message, user_id)
 
     except asyncio.TimeoutError:
@@ -493,6 +549,8 @@ async def handle_video(message: Message):
                 'video_bytes': raw_bytes,
                 'search_count': 0
             }
+            title = safe_get_title(cached['result'][0]) if cached['result'] else None
+            add_history(user_id, 'видео', title)
             await show_result(message, user_id)
             return
 
@@ -545,8 +603,10 @@ async def handle_video(message: Message):
                         'video_bytes': raw_bytes,
                         'search_count': 0
                     }
+                    add_history(user_id, 'видео', title)
                     return
                 else:
+                    add_history(user_id, 'видео', None)
                     await message.reply("😔 Ни trace.moe, ни SauceNAO не нашли аниме.")
                     return
             except asyncio.TimeoutError:
@@ -558,6 +618,7 @@ async def handle_video(message: Message):
             await message.reply("⚠️ Неверный формат данных от сервиса.")
             return
 
+        title = safe_get_title(results_list[0])
         cache_result(cache_key, {'result': results_list})
         user_data[user_id] = {
             'results': results_list,
@@ -565,6 +626,7 @@ async def handle_video(message: Message):
             'video_bytes': raw_bytes,
             'search_count': 0
         }
+        add_history(user_id, 'видео', title)
         await show_result(message, user_id)
 
     except Exception as e:
