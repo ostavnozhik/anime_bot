@@ -6,9 +6,6 @@ from aiohttp import web
 from aiogram import Bot, Dispatcher, types
 from aiogram.filters import Command
 from aiogram.types import Message, CallbackQuery, InlineKeyboardMarkup, InlineKeyboardButton, BotCommand
-from aiogram.fsm.context import FSMContext
-from aiogram.fsm.state import State, StatesGroup
-from aiogram.fsm.storage.memory import MemoryStorage
 import traceback
 import sys
 import hashlib
@@ -16,8 +13,8 @@ import time
 from collections import defaultdict
 import subprocess
 import tempfile
-import io
 from PIL import Image
+import io
 
 sys.stdout.reconfigure(line_buffering=True)
 
@@ -37,15 +34,11 @@ except Exception:
     print("❌ FFmpeg НЕ ДОСТУПЕН")
     sys.exit(1)
 
-storage = MemoryStorage()
 bot = Bot(token=BOT_TOKEN)
-dp = Dispatcher(storage=storage)
+dp = Dispatcher()
 
-class SearchState(StatesGroup):
-    results = State()
-    index = State()
-    video_bytes = State()
-    search_count = State()
+# --- Ручное хранилище данных пользователей ---
+user_data = {}  # {user_id: {'results': [...], 'index': 0, 'video_bytes': b'...', 'search_count': 0}}
 
 # --- Кеш ---
 search_cache = {}
@@ -158,9 +151,10 @@ async def set_default_commands():
 
 # --- Команды ---
 @dp.message(Command('start'))
-async def start_command(message: Message, state: FSMContext):
-    print(f"📩 /start от {message.from_user.id}")
-    await state.clear()
+async def start_command(message: Message):
+    user_id = message.from_user.id
+    user_data.pop(user_id, None)  # очищаем данные пользователя
+    print(f"📩 /start от {user_id}")
     await message.reply(
         "👋 Привет! Отправь скриншот или видео, и я найду аниме.\n\n❓ Помощь — /help",
         reply_markup=help_kb
@@ -193,22 +187,15 @@ async def process_help(callback: CallbackQuery):
 
 # --- Обработчик фото ---
 @dp.message(lambda msg: msg.photo is not None)
-async def handle_photo(message: Message, state: FSMContext):
-    print(f"📸 Обработка фото от {message.from_user.id}")
+async def handle_photo(message: Message):
+    user_id = message.from_user.id
+    print(f"📸 Обработка фото от {user_id}")
     try:
-        user_id = message.from_user.id
         now = time.time()
         if now - user_last_request[user_id] < REQUEST_INTERVAL:
             await message.reply("⏳ Подожди немного.")
             return
         user_last_request[user_id] = now
-
-        # Проверяем состояние и очищаем, если оно повреждено
-        data = await state.get_data()
-        if 'results' in data:
-            if not isinstance(data['results'], list) or not data['results'] or not isinstance(data['results'][0], dict):
-                print("   ⚠️ Повреждённое состояние, очищаем...")
-                await state.clear()
 
         photo = message.photo[-1]
         file = await bot.get_file(photo.file_id)
@@ -220,10 +207,13 @@ async def handle_photo(message: Message, state: FSMContext):
         cached = await get_cached_result(cache_key)
         if cached:
             print("   ♻️ Используем кеш")
-            # Полная перезапись состояния
-            await state.clear()
-            await state.update_data(results=cached['result'], index=0, video_bytes=None, search_count=0)
-            await show_result(message, state, 0)
+            user_data[user_id] = {
+                'results': cached['result'],
+                'index': 0,
+                'video_bytes': None,
+                'search_count': 0
+            }
+            await show_result(message, user_id)
             return
 
         compressed = compress_image(raw_bytes)
@@ -243,9 +233,13 @@ async def handle_photo(message: Message, state: FSMContext):
             return
 
         cache_result(cache_key, {'result': results_list})
-        await state.clear()
-        await state.update_data(results=results_list, index=0, video_bytes=None, search_count=0)
-        await show_result(message, state, 0)
+        user_data[user_id] = {
+            'results': results_list,
+            'index': 0,
+            'video_bytes': None,
+            'search_count': 0
+        }
+        await show_result(message, user_id)
 
     except asyncio.TimeoutError:
         await message.reply("⏳ Сервис поиска долго отвечает.")
@@ -255,22 +249,15 @@ async def handle_photo(message: Message, state: FSMContext):
 
 # --- Обработчик видео ---
 @dp.message(lambda msg: msg.video is not None)
-async def handle_video(message: Message, state: FSMContext):
-    print(f"🎬 Обработка видео от {message.from_user.id}")
+async def handle_video(message: Message):
+    user_id = message.from_user.id
+    print(f"🎬 Обработка видео от {user_id}")
     try:
-        user_id = message.from_user.id
         now = time.time()
         if now - user_last_request[user_id] < REQUEST_INTERVAL:
             await message.reply("⏳ Подожди немного.")
             return
         user_last_request[user_id] = now
-
-        # Проверяем состояние и очищаем, если оно повреждено
-        data = await state.get_data()
-        if 'results' in data:
-            if not isinstance(data['results'], list) or not data['results'] or not isinstance(data['results'][0], dict):
-                print("   ⚠️ Повреждённое состояние, очищаем...")
-                await state.clear()
 
         video = message.video
         if video.file_size > 20 * 1024 * 1024:
@@ -286,9 +273,13 @@ async def handle_video(message: Message, state: FSMContext):
         cached = await get_cached_result(cache_key)
         if cached:
             print("   ♻️ Используем кеш")
-            await state.clear()
-            await state.update_data(results=cached['result'], index=0, video_bytes=raw_bytes, search_count=0)
-            await show_result(message, state, 0)
+            user_data[user_id] = {
+                'results': cached['result'],
+                'index': 0,
+                'video_bytes': raw_bytes,
+                'search_count': 0
+            }
+            await show_result(message, user_id)
             return
 
         percentages_first = [5, 20, 50, 70, 95]
@@ -323,30 +314,39 @@ async def handle_video(message: Message, state: FSMContext):
             return
 
         cache_result(cache_key, {'result': results_list})
-        await state.clear()
-        await state.update_data(results=results_list, index=0, video_bytes=raw_bytes, search_count=0)
-        await show_result(message, state, 0)
+        user_data[user_id] = {
+            'results': results_list,
+            'index': 0,
+            'video_bytes': raw_bytes,
+            'search_count': 0
+        }
+        await show_result(message, user_id)
 
     except Exception as e:
         print(f"❌ Ошибка handle_video:\n{traceback.format_exc()}")
         await message.reply("⚠️ Ошибка, попробуй другой файл или /start")
 
 # --- Функция показа результата ---
-async def show_result(message: Message, state: FSMContext, idx: int):
-    print(f"📤 Показ результата {idx+1}")
+async def show_result(message: Message, user_id: int):
+    print(f"📤 Показ результата для {user_id}")
     try:
-        data = await state.get_data()
+        data = user_data.get(user_id)
+        if not data:
+            await message.reply("⚠️ Данные не найдены. Попробуй /start")
+            return
+
         results = data.get('results')
-        # Проверяем, что results — это список словарей
+        idx = data.get('index', 0)
+
         if not isinstance(results, list) or not results or not isinstance(results[0], dict):
-            print(f"❌ Некорректные данные в состоянии: {type(results)}, {results[:3] if isinstance(results, list) else results}")
+            print(f"❌ Некорректные данные: {type(results)}")
             await message.reply("⚠️ Ошибка данных. Попробуй /start заново.")
-            await state.clear()
+            user_data.pop(user_id, None)
             return
 
         if idx >= len(results):
             await message.reply("🏁 Это был последний результат. Попробуй другой файл.")
-            await state.clear()
+            user_data.pop(user_id, None)
             return
 
         best = results[idx]
@@ -371,7 +371,8 @@ async def show_result(message: Message, state: FSMContext, idx: int):
             answer += f"\n\n🔗 [Смотреть на Shikimori]({shikimori_url})"
 
         await message.reply(answer, reply_markup=next_kb)
-        await state.update_data(index=idx)
+        # Обновляем индекс в хранилище
+        user_data[user_id]['index'] = idx
 
     except Exception as e:
         print(f"❌ Ошибка show_result: {e}")
@@ -379,22 +380,27 @@ async def show_result(message: Message, state: FSMContext, idx: int):
 
 # --- Кнопка "Нет, ищи другое" ---
 @dp.callback_query(lambda c: c.data == "next")
-async def process_next(callback: CallbackQuery, state: FSMContext):
-    print(f"🔄 Нажата 'Нет, ищи другое' от {callback.from_user.id}")
+async def process_next(callback: CallbackQuery):
+    user_id = callback.from_user.id
+    print(f"🔄 Нажата 'Нет, ищи другое' от {user_id}")
     try:
         await callback.answer()
-        data = await state.get_data()
+        data = user_data.get(user_id)
+        if not data:
+            await callback.message.edit_text("⚠️ Данные не найдены. Попробуй /start")
+            return
+
         results = data.get('results')
         idx = data.get('index', 0)
         video_bytes = data.get('video_bytes')
         search_count = data.get('search_count', 0)
 
-        # Проверка корректности results
         if not isinstance(results, list) or not results or not isinstance(results[0], dict):
             await callback.message.edit_text("⚠️ Ошибка данных. Попробуй /start")
-            await state.clear()
+            user_data.pop(user_id, None)
             return
 
+        # Если это видео и второй набор кадров ещё не использовался
         if video_bytes is not None and search_count == 0:
             print("   🔄 Используем второй набор кадров")
             percentages_second = [8, 22, 53, 75, 90]
@@ -420,7 +426,7 @@ async def process_next(callback: CallbackQuery, state: FSMContext):
 
             if not found_result:
                 await callback.message.edit_text("😔 Второй набор кадров ничего не дал.")
-                await state.clear()
+                user_data.pop(user_id, None)
                 return
 
             new_results = found_result['result']
@@ -428,22 +434,29 @@ async def process_next(callback: CallbackQuery, state: FSMContext):
                 await callback.message.edit_text("⚠️ Неверный формат данных.")
                 return
 
-            await state.clear()
-            await state.update_data(results=new_results, index=0, search_count=1, video_bytes=video_bytes)
-            await show_result(callback.message, state, 0)
+            # Обновляем данные пользователя
+            user_data[user_id] = {
+                'results': new_results,
+                'index': 0,
+                'video_bytes': video_bytes,
+                'search_count': 1
+            }
+            await show_result(callback.message, user_id)
             try:
                 await callback.message.delete()
             except Exception:
                 pass
             return
 
+        # Просто листаем результаты
         next_idx = idx + 1
         if next_idx >= len(results):
             await callback.message.edit_text("🏁 Это был последний результат.")
-            await state.clear()
+            user_data.pop(user_id, None)
             return
 
-        await show_result(callback.message, state, next_idx)
+        user_data[user_id]['index'] = next_idx
+        await show_result(callback.message, user_id)
         try:
             await callback.message.delete()
         except Exception:
