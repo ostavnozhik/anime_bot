@@ -4,7 +4,7 @@ import json
 import aiohttp
 from aiohttp import web
 from aiogram import Bot, Dispatcher, types
-from aiogram.filters import Command, F
+from aiogram.filters import Command
 from aiogram.types import Message, CallbackQuery, InlineKeyboardMarkup, InlineKeyboardButton, BotCommand
 from aiogram.fsm.context import FSMContext
 from aiogram.fsm.state import State, StatesGroup
@@ -191,8 +191,8 @@ async def process_help(callback: CallbackQuery):
     except Exception as e:
         print(f"❌ Ошибка process_help: {e}")
 
-# --- Обработчик фото (исправлен) ---
-@dp.message(F.photo)
+# --- Обработчик фото (исправлен — используем лямбду) ---
+@dp.message(lambda msg: msg.photo is not None)
 async def handle_photo(message: Message, state: FSMContext):
     print(f"📸 Обработка фото от {message.from_user.id}")
     try:
@@ -238,8 +238,8 @@ async def handle_photo(message: Message, state: FSMContext):
         print(f"❌ Ошибка handle_photo:\n{traceback.format_exc()}")
         await message.reply("⚠️ Ошибка, попробуй другой скриншот или /start")
 
-# --- Обработчик видео (исправлен) ---
-@dp.message(F.video)
+# --- Обработчик видео (исправлен — используем лямбду) ---
+@dp.message(lambda msg: msg.video is not None)
 async def handle_video(message: Message, state: FSMContext):
     print(f"🎬 Обработка видео от {message.from_user.id}")
     try:
