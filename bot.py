@@ -34,14 +34,12 @@ except Exception:
     print("❌ FFmpeg НЕ ДОСТУПЕН")
     sys.exit(1)
 
-# --- СОЗДАНИЕ БОТА И ДИСПЕТЧЕРА ---
+# --- СОЗДАЁМ БОТА И ДИСПЕТЧЕРА ---
 bot = Bot(token=BOT_TOKEN)
-dp = Dispatcher()
+dp = Dispatcher()  # <-- ЭТОТ ОБЪЕКТ НУЖЕН ДЛЯ ДЕКОРАТОРОВ
 
-# --- Ручное хранилище данных пользователей ---
-user_data = {}  # {user_id: {'results': [...], 'index': 0, 'video_bytes': b'...', 'search_count': 0}}
-
-# --- Кеш ---
+# --- Хранилище данных пользователей ---
+user_data = {}
 search_cache = {}
 CACHE_TTL = 3600
 
@@ -60,7 +58,6 @@ async def get_cached_result(key: str):
 def cache_result(key: str, result):
     search_cache[key] = (result, time.time())
 
-# --- Троттлинг ---
 user_last_request = defaultdict(float)
 REQUEST_INTERVAL = 3
 
@@ -77,7 +74,7 @@ next_kb = InlineKeyboardMarkup(
     ]
 )
 
-# --- Вспомогательные ---
+# --- Вспомогательные функции ---
 def format_time(seconds: float) -> str:
     minutes = int(seconds // 60)
     secs = int(seconds % 60)
@@ -149,7 +146,7 @@ async def set_default_commands():
     await bot.set_my_commands(commands)
     print("✅ Меню команд установлено")
 
-# --- Хендлеры (ОБЯЗАТЕЛЬНО ПОСЛЕ СОЗДАНИЯ dp) ---
+# --- ХЕНДЛЕРЫ (все используют dp, который уже создан) ---
 
 @dp.message(Command('start'))
 async def start_command(message: Message):
@@ -208,7 +205,12 @@ async def handle_photo(message: Message):
         cached = await get_cached_result(cache_key)
         if cached:
             print("   ♻️ Используем кеш")
-            user_data[user_id] = {'results': cached['result'], 'index': 0, 'video_bytes': None, 'search_count': 0}
+            user_data[user_id] = {
+                'results': cached['result'],
+                'index': 0,
+                'video_bytes': None,
+                'search_count': 0
+            }
             await show_result(message, user_id)
             return
 
@@ -218,16 +220,23 @@ async def handle_photo(message: Message):
         if result.get('error'):
             await message.reply(f"⚠️ Ошибка API: {result['error']}")
             return
+
         if not isinstance(result.get('result'), list) or len(result['result']) == 0:
             await message.reply("😔 Ничего не найдено. Попробуй другой скриншот.")
             return
+
         results_list = result['result']
         if not results_list or not isinstance(results_list[0], dict):
             await message.reply("⚠️ Неверный формат данных от сервиса.")
             return
 
         cache_result(cache_key, {'result': results_list})
-        user_data[user_id] = {'results': results_list, 'index': 0, 'video_bytes': None, 'search_count': 0}
+        user_data[user_id] = {
+            'results': results_list,
+            'index': 0,
+            'video_bytes': None,
+            'search_count': 0
+        }
         await show_result(message, user_id)
 
     except asyncio.TimeoutError:
@@ -262,7 +271,12 @@ async def handle_video(message: Message):
         cached = await get_cached_result(cache_key)
         if cached:
             print("   ♻️ Используем кеш")
-            user_data[user_id] = {'results': cached['result'], 'index': 0, 'video_bytes': raw_bytes, 'search_count': 0}
+            user_data[user_id] = {
+                'results': cached['result'],
+                'index': 0,
+                'video_bytes': raw_bytes,
+                'search_count': 0
+            }
             await show_result(message, user_id)
             return
 
@@ -298,7 +312,12 @@ async def handle_video(message: Message):
             return
 
         cache_result(cache_key, {'result': results_list})
-        user_data[user_id] = {'results': results_list, 'index': 0, 'video_bytes': raw_bytes, 'search_count': 0}
+        user_data[user_id] = {
+            'results': results_list,
+            'index': 0,
+            'video_bytes': raw_bytes,
+            'search_count': 0
+        }
         await show_result(message, user_id)
 
     except Exception as e:
@@ -317,7 +336,7 @@ async def show_result(message: Message, user_id: int):
         idx = data.get('index', 0)
 
         if not isinstance(results, list) or not results or not isinstance(results[0], dict):
-            print(f"❌ Некорректные данные: {type(results)}")
+            print(f"❌ Некорректные данные: {type(results)} -> {results}")
             await message.reply("⚠️ Ошибка данных. Попробуй /start заново.")
             user_data.pop(user_id, None)
             return
@@ -376,7 +395,6 @@ async def process_next(callback: CallbackQuery):
             user_data.pop(user_id, None)
             return
 
-        # Если это видео и второй набор ещё не использовался
         if video_bytes is not None and search_count == 0:
             print("   🔄 Используем второй набор кадров")
             percentages_second = [8, 22, 53, 75, 90]
@@ -410,7 +428,6 @@ async def process_next(callback: CallbackQuery):
                 await callback.message.edit_text("⚠️ Неверный формат данных.")
                 return
 
-            # Обновляем данные
             user_data[user_id] = {
                 'results': new_results,
                 'index': 0,
@@ -424,7 +441,6 @@ async def process_next(callback: CallbackQuery):
                 pass
             return
 
-        # Просто листаем результаты
         next_idx = idx + 1
         if next_idx >= len(results):
             await callback.message.edit_text("🏁 Это был последний результат.")
