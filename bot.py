@@ -37,10 +37,7 @@ except Exception:
 bot = Bot(token=BOT_TOKEN)
 dp = Dispatcher()
 
-# --- Хранилище пользователей (простой словарь) ---
 user_data = {}
-
-# --- Кеш ---
 search_cache = {}
 CACHE_TTL = 3600
 
@@ -59,11 +56,9 @@ async def get_cached_result(key: str):
 def cache_result(key: str, result):
     search_cache[key] = (result, time.time())
 
-# --- Троттлинг ---
 user_last_request = defaultdict(float)
 REQUEST_INTERVAL = 3
 
-# --- Клавиатуры ---
 help_kb = InlineKeyboardMarkup(
     inline_keyboard=[
         [InlineKeyboardButton(text="❓ Помощь", callback_data="help")]
@@ -76,19 +71,30 @@ next_kb = InlineKeyboardMarkup(
     ]
 )
 
-# --- Вспомогательные функции ---
 def format_time(seconds: float) -> str:
     minutes = int(seconds // 60)
     secs = int(seconds % 60)
     return f"{minutes} мин {secs} сек"
 
 def extract_title(best: dict) -> str:
+    """
+    Надёжно извлекает название аниме из ответа trace.moe.
+    Поддерживает разные форматы поля 'anilist'.
+    """
     try:
+        # Сначала пробуем получить название из поля 'title', если оно есть
+        if 'title' in best and isinstance(best['title'], dict):
+            title = best['title']
+            return title.get('romaji') or title.get('english') or title.get('native') or best.get('filename', 'Неизвестно')
+        
+        # Если поле 'anilist' — словарь, извлекаем оттуда
         anilist = best.get('anilist')
-        if isinstance(anilist, dict):
-            title = anilist.get('title', {})
+        if isinstance(anilist, dict) and 'title' in anilist:
+            title = anilist['title']
             if isinstance(title, dict):
                 return title.get('romaji') or title.get('english') or title.get('native') or best.get('filename', 'Неизвестно')
+        
+        # Если ничего не помогло — используем имя файла
         return best.get('filename', 'Неизвестно')
     except Exception:
         return "Неизвестно"
@@ -139,7 +145,6 @@ async def search_by_frame(image_bytes: bytes) -> dict:
             print(f"   📨 Ответ trace.moe: {json.dumps(result, indent=2, ensure_ascii=False)[:1000]}")
             return result
 
-# --- Команды ---
 async def set_default_commands():
     commands = [
         BotCommand(command="start", description="🚀 Запустить бота"),
@@ -187,10 +192,7 @@ async def process_help(callback: CallbackQuery):
 async def handle_photo(message: Message):
     user_id = message.from_user.id
     print(f"📸 Обработка фото от {user_id}")
-    
-    # Полная очистка старых данных
     user_data.pop(user_id, None)
-    
     try:
         now = time.time()
         if now - user_last_request[user_id] < REQUEST_INTERVAL:
@@ -252,9 +254,7 @@ async def handle_photo(message: Message):
 async def handle_video(message: Message):
     user_id = message.from_user.id
     print(f"🎬 Обработка видео от {user_id}")
-    
     user_data.pop(user_id, None)
-    
     try:
         now = time.time()
         if now - user_last_request[user_id] < REQUEST_INTERVAL:
@@ -340,24 +340,9 @@ async def show_result(message: Message, user_id: int):
         results = data.get('results')
         idx = data.get('index', 0)
 
-        # === ЖЁСТКАЯ ПРОВЕРКА ===
-        print(f"   🔍 Тип results: {type(results)}")
-        print(f"   🔍 Тип idx: {type(idx)}")
-        print(f"   🔍 idx = {idx}")
-
-        if not isinstance(results, list):
+        if not isinstance(results, list) or not results or not isinstance(results[0], dict):
             user_data.pop(user_id, None)
             await message.reply("⚠️ Ошибка данных. Попробуй /start заново.")
-            return
-
-        if not results:
-            user_data.pop(user_id, None)
-            await message.reply("⚠️ Данные пустые. Попробуй /start заново.")
-            return
-
-        if not isinstance(results[0], dict):
-            user_data.pop(user_id, None)
-            await message.reply("⚠️ Неверный формат данных. Попробуй /start заново.")
             return
 
         if idx >= len(results):
@@ -366,20 +351,15 @@ async def show_result(message: Message, user_id: int):
             return
 
         best = results[idx]
-        print(f"   🔍 Тип best: {type(best)}")
-
-        if not isinstance(best, dict):
-            user_data.pop(user_id, None)
-            await message.reply("⚠️ Ошибка данных. Попробуй /start заново.")
-            return
-
         name = extract_title(best)
         episode = best.get('episode', 'неизвестно')
         from_time = best.get('from', 0.0)
         similarity = best.get('similarity', 0.0) * 100
         time_str = format_time(from_time)
 
-        anilist_id = best.get('anilist', {}).get('id')
+        anilist_id = best.get('anilist', {})
+        if isinstance(anilist_id, dict):
+            anilist_id = anilist_id.get('id')
         shikimori_url = f"https://shikimori.one/animes/{anilist_id}" if anilist_id else None
 
         answer = (
@@ -484,7 +464,6 @@ async def process_next(callback: CallbackQuery):
         print(f"❌ Ошибка process_next: {e}")
         await callback.message.answer("⚠️ Ошибка, попробуй /start")
 
-# --- Веб-сервер ---
 async def handle_health(request):
     return web.Response(text="OK")
 
@@ -500,7 +479,6 @@ async def start_web_server():
     print(f"✅ Веб-сервер health-check запущен на порту {port}")
     await asyncio.Event().wait()
 
-# --- Запуск ---
 async def main():
     print("🚀 Запуск main()")
     await set_default_commands()
