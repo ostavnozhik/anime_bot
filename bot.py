@@ -34,14 +34,13 @@ except Exception:
     print("❌ FFmpeg НЕ ДОСТУПЕН")
     sys.exit(1)
 
-# ==== ИНИЦИАЛИЗАЦИЯ ====
 bot = Bot(token=BOT_TOKEN)
-dp = Dispatcher()  # <-- ЭТО ОБЪЕКТ, ОН НУЖЕН
+dp = Dispatcher()
 
-# Хранилище данных пользователей
+# --- Хранилище пользователей ---
 user_data = {}
 
-# Кеш
+# --- Кеш ---
 search_cache = {}
 CACHE_TTL = 3600
 
@@ -60,11 +59,11 @@ async def get_cached_result(key: str):
 def cache_result(key: str, result):
     search_cache[key] = (result, time.time())
 
-# Троттлинг
+# --- Троттлинг ---
 user_last_request = defaultdict(float)
 REQUEST_INTERVAL = 3
 
-# Клавиатуры
+# --- Клавиатуры ---
 help_kb = InlineKeyboardMarkup(
     inline_keyboard=[
         [InlineKeyboardButton(text="❓ Помощь", callback_data="help")]
@@ -77,7 +76,7 @@ next_kb = InlineKeyboardMarkup(
     ]
 )
 
-# ==== ВСПОМОГАТЕЛЬНЫЕ ФУНКЦИИ ====
+# --- Вспомогательные ---
 def format_time(seconds: float) -> str:
     minutes = int(seconds // 60)
     secs = int(seconds % 60)
@@ -140,7 +139,7 @@ async def search_by_frame(image_bytes: bytes) -> dict:
             print(f"   📨 Ответ trace.moe: {json.dumps(result, indent=2, ensure_ascii=False)[:1000]}")
             return result
 
-# ==== КОМАНДЫ И ХЕНДЛЕРЫ ====
+# --- Команды ---
 async def set_default_commands():
     commands = [
         BotCommand(command="start", description="🚀 Запустить бота"),
@@ -188,7 +187,7 @@ async def process_help(callback: CallbackQuery):
 async def handle_photo(message: Message):
     user_id = message.from_user.id
     print(f"📸 Обработка фото от {user_id}")
-    user_data.pop(user_id, None)
+    user_data.pop(user_id, None)  # <-- ГАРАНТИРОВАННО УДАЛЯЕМ СТАРЫЕ ДАННЫЕ
     try:
         now = time.time()
         if now - user_last_request[user_id] < REQUEST_INTERVAL:
@@ -250,7 +249,7 @@ async def handle_photo(message: Message):
 async def handle_video(message: Message):
     user_id = message.from_user.id
     print(f"🎬 Обработка видео от {user_id}")
-    user_data.pop(user_id, None)
+    user_data.pop(user_id, None)  # <-- ГАРАНТИРОВАННО УДАЛЯЕМ СТАРЫЕ ДАННЫЕ
     try:
         now = time.time()
         if now - user_last_request[user_id] < REQUEST_INTERVAL:
@@ -336,10 +335,25 @@ async def show_result(message: Message, user_id: int):
         results = data.get('results')
         idx = data.get('index', 0)
 
-        if not isinstance(results, list) or not results or not isinstance(results[0], dict):
-            print(f"❌ Некорректные данные: {type(results)} -> {results}")
-            await message.reply("⚠️ Ошибка данных. Попробуй /start заново.")
+        # === ЖЁСТКАЯ ПРОВЕРКА ===
+        print(f"   🔍 Тип results: {type(results)}, значение: {results}")
+
+        if not isinstance(results, list):
+            print(f"❌ results НЕ СПИСОК! Это {type(results)}. Очищаем...")
             user_data.pop(user_id, None)
+            await message.reply("⚠️ Ошибка данных. Попробуй /start заново.")
+            return
+
+        if not results:
+            print("❌ results пустой список")
+            user_data.pop(user_id, None)
+            await message.reply("⚠️ Данные пустые. Попробуй /start заново.")
+            return
+
+        if not isinstance(results[0], dict):
+            print(f"❌ первый элемент не словарь: {type(results[0])}")
+            user_data.pop(user_id, None)
+            await message.reply("⚠️ Неверный формат данных. Попробуй /start заново.")
             return
 
         if idx >= len(results):
@@ -391,6 +405,7 @@ async def process_next(callback: CallbackQuery):
         video_bytes = data.get('video_bytes')
         search_count = data.get('search_count', 0)
 
+        # Проверка
         if not isinstance(results, list) or not results or not isinstance(results[0], dict):
             await callback.message.edit_text("⚠️ Ошибка данных. Попробуй /start")
             user_data.pop(user_id, None)
@@ -459,7 +474,7 @@ async def process_next(callback: CallbackQuery):
         print(f"❌ Ошибка process_next: {e}")
         await callback.message.answer("⚠️ Ошибка, попробуй /start")
 
-# ==== ВЕБ-СЕРВЕР ДЛЯ HEALTH-CHECK ====
+# --- Веб-сервер ---
 async def handle_health(request):
     return web.Response(text="OK")
 
@@ -475,7 +490,7 @@ async def start_web_server():
     print(f"✅ Веб-сервер health-check запущен на порту {port}")
     await asyncio.Event().wait()
 
-# ==== ЗАПУСК ====
+# --- Запуск ---
 async def main():
     print("🚀 Запуск main()")
     await set_default_commands()
