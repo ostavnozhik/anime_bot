@@ -191,7 +191,7 @@ async def process_help(callback: CallbackQuery):
     except Exception as e:
         print(f"❌ Ошибка process_help: {e}")
 
-# --- Обработчик фото (исправлен — используем лямбду) ---
+# --- Обработчик фото ---
 @dp.message(lambda msg: msg.photo is not None)
 async def handle_photo(message: Message, state: FSMContext):
     print(f"📸 Обработка фото от {message.from_user.id}")
@@ -228,8 +228,15 @@ async def handle_photo(message: Message, state: FSMContext):
             await message.reply("😔 Ничего не найдено. Попробуй другой скриншот.")
             return
 
-        cache_result(cache_key, {'result': result['result']})
-        await state.update_data(results=result['result'], index=0, video_bytes=None, search_count=0)
+        # Сохраняем результаты в состояние
+        results_list = result['result']
+        # Убедимся, что это список словарей
+        if not results_list or not isinstance(results_list[0], dict):
+            await message.reply("⚠️ Неверный формат данных от сервиса.")
+            return
+
+        cache_result(cache_key, {'result': results_list})
+        await state.update_data(results=results_list, index=0, video_bytes=None, search_count=0)
         await show_result(message, state, 0)
 
     except asyncio.TimeoutError:
@@ -238,7 +245,7 @@ async def handle_photo(message: Message, state: FSMContext):
         print(f"❌ Ошибка handle_photo:\n{traceback.format_exc()}")
         await message.reply("⚠️ Ошибка, попробуй другой скриншот или /start")
 
-# --- Обработчик видео (исправлен — используем лямбду) ---
+# --- Обработчик видео ---
 @dp.message(lambda msg: msg.video is not None)
 async def handle_video(message: Message, state: FSMContext):
     print(f"🎬 Обработка видео от {message.from_user.id}")
@@ -290,21 +297,33 @@ async def handle_video(message: Message, state: FSMContext):
             await message.reply("😔 По этому видео ничего не найдено.")
             return
 
-        cache_result(cache_key, {'result': found_result['result']})
-        await state.update_data(results=found_result['result'], index=0, video_bytes=raw_bytes, search_count=0)
+        results_list = found_result['result']
+        if not results_list or not isinstance(results_list[0], dict):
+            await message.reply("⚠️ Неверный формат данных от сервиса.")
+            return
+
+        cache_result(cache_key, {'result': results_list})
+        await state.update_data(results=results_list, index=0, video_bytes=raw_bytes, search_count=0)
         await show_result(message, state, 0)
 
     except Exception as e:
         print(f"❌ Ошибка handle_video:\n{traceback.format_exc()}")
         await message.reply("⚠️ Ошибка, попробуй другой файл или /start")
 
-# --- Функция показа результата ---
+# --- Функция показа результата с защитой от некорректных данных ---
 async def show_result(message: Message, state: FSMContext, idx: int):
     print(f"📤 Показ результата {idx+1}")
     try:
         data = await state.get_data()
         results = data.get('results')
-        if not results or idx >= len(results):
+        # Проверяем, что results — это список и его элементы — словари
+        if not isinstance(results, list) or not results or not isinstance(results[0], dict):
+            print(f"❌ Некорректные данные в состоянии: {type(results)}, {results[:3] if isinstance(results, list) else results}")
+            await message.reply("⚠️ Ошибка данных. Попробуй /start заново.")
+            await state.clear()
+            return
+
+        if idx >= len(results):
             await message.reply("🏁 Это был последний результат. Попробуй другой файл.")
             await state.clear()
             return
@@ -335,7 +354,7 @@ async def show_result(message: Message, state: FSMContext, idx: int):
 
     except Exception as e:
         print(f"❌ Ошибка show_result: {e}")
-        await message.reply("⚠️ Ошибка, попробуй /start")
+        await message.reply("⚠️ Ошибка отображения результата. Попробуй /start.")
 
 # --- Кнопка "Нет, ищи другое" ---
 @dp.callback_query(lambda c: c.data == "next")
@@ -351,6 +370,12 @@ async def process_next(callback: CallbackQuery, state: FSMContext):
 
         if not results:
             await callback.message.edit_text("⚠️ Результаты не найдены. Попробуй /start")
+            await state.clear()
+            return
+
+        # Проверка корректности results
+        if not isinstance(results, list) or not results or not isinstance(results[0], dict):
+            await callback.message.edit_text("⚠️ Ошибка данных. Попробуй /start")
             await state.clear()
             return
 
@@ -382,7 +407,12 @@ async def process_next(callback: CallbackQuery, state: FSMContext):
                 await state.clear()
                 return
 
-            await state.update_data(results=found_result['result'], index=0, search_count=1)
+            new_results = found_result['result']
+            if not new_results or not isinstance(new_results[0], dict):
+                await callback.message.edit_text("⚠️ Неверный формат данных.")
+                return
+
+            await state.update_data(results=new_results, index=0, search_count=1)
             await show_result(callback.message, state, 0)
             try:
                 await callback.message.delete()
