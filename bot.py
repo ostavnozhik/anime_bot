@@ -14,21 +14,27 @@ import sys
 import hashlib
 import time
 from collections import defaultdict
-from PIL import Image
-import io
 import subprocess
 import tempfile
-import os
+import io
+from PIL import Image
+
+# Включаем буферизацию вывода в реальном времени
+sys.stdout.reconfigure(line_buffering=True)
+
+print("🚀 БОТ ЗАПУСКАЕТСЯ...")
 
 BOT_TOKEN = os.getenv('BOT_TOKEN')
 if not BOT_TOKEN:
     print("❌ BOT_TOKEN не задан")
     sys.exit(1)
 
-# --- Диагностика ffmpeg ---
+print("✅ Токен получен")
+
+# Проверка ffmpeg
 try:
     result = subprocess.run(['ffmpeg', '-version'], capture_output=True, text=True, timeout=5)
-    print("✅ FFmpeg доступен:", result.stdout[:200])
+    print("✅ FFmpeg доступен")
 except Exception as e:
     print("❌ FFmpeg НЕ ДОСТУПЕН:", e)
     sys.exit(1)
@@ -79,7 +85,7 @@ next_kb = InlineKeyboardMarkup(
     ]
 )
 
-# --- Вспомогательные функции ---
+# --- Вспомогательные ---
 def format_time(seconds: float) -> str:
     minutes = int(seconds // 60)
     secs = int(seconds % 60)
@@ -96,34 +102,22 @@ def extract_title(best: dict) -> str:
     except Exception:
         return "Неизвестно"
 
-# !!! ВРЕМЕННО ОТКЛЮЧАЕМ СЖАТИЕ ДЛЯ ТЕСТА !!!
 def compress_image(image_bytes: bytes, max_size: int = 800) -> bytes:
-    # Для теста просто возвращаем оригинал без сжатия
-    print("🔍 Сжатие отключено (тестовый режим)")
+    # Без сжатия для теста
+    print("   🖼️ Сжатие пропущено (размер:", len(image_bytes), "байт)")
     return image_bytes
-    # Раскомментируйте ниже, если хотите вернуть сжатие позже
-    # try:
-    #     img = Image.open(io.BytesIO(image_bytes))
-    #     if max(img.size) > max_size:
-    #         ratio = max_size / max(img.size)
-    #         new_size = (int(img.size[0] * ratio), int(img.size[1] * ratio))
-    #         img = img.resize(new_size, Image.Resampling.LANCZOS)
-    #     buffer = io.BytesIO()
-    #     img.save(buffer, format='JPEG', quality=85, optimize=True)
-    #     return buffer.getvalue()
-    # except Exception:
-    #     return image_bytes
 
 def extract_frames(video_path: str, percentages: list) -> list:
-    """Извлекает кадры через ffmpeg."""
+    print(f"   🎬 Извлечение кадров на процентах: {percentages}")
     cmd_duration = [
         'ffprobe', '-v', 'error', '-show_entries',
         'format=duration', '-of', 'default=noprint_wrappers=1:nokey=1', video_path
     ]
     try:
         duration = float(subprocess.check_output(cmd_duration, text=True).strip())
+        print(f"   ⏱️ Длительность видео: {duration} сек")
     except Exception as e:
-        print(f"Ошибка получения длительности: {e}")
+        print(f"   ❌ Ошибка получения длительности: {e}")
         raise Exception("Не удалось получить длительность видео")
 
     frames = []
@@ -138,22 +132,22 @@ def extract_frames(video_path: str, percentages: list) -> list:
             stdout, stderr = process.communicate(timeout=10)
             if process.returncode == 0 and stdout:
                 frames.append(stdout)
-                print(f"✅ Кадр на {pct}% извлечён, размер {len(stdout)} байт")
+                print(f"   ✅ Кадр на {pct}% извлечён, размер {len(stdout)} байт")
             else:
-                print(f"⚠️ Не удалось извлечь кадр на {pct}%: {stderr.decode()[:100]}")
+                print(f"   ⚠️ Не удалось извлечь кадр на {pct}%: {stderr.decode()[:100]}")
         except Exception as e:
-            print(f"Ошибка ffmpeg: {e}")
+            print(f"   ❌ Ошибка ffmpeg: {e}")
             continue
     return frames
 
 async def search_by_frame(image_bytes: bytes) -> dict:
+    print("   🔍 Отправка запроса к trace.moe, размер:", len(image_bytes), "байт")
     async with aiohttp.ClientSession(timeout=aiohttp.ClientTimeout(total=30)) as session:
         data = aiohttp.FormData()
         data.add_field('image', image_bytes, filename='screenshot.jpg')
         async with session.post('https://api.trace.moe/search', data=data) as resp:
             result = await resp.json()
-            # Полный лог ответа
-            print(f"📨 Ответ trace.moe: {json.dumps(result, indent=2, ensure_ascii=False)}")
+            print(f"   📨 Ответ trace.moe: {json.dumps(result, indent=2, ensure_ascii=False)[:1000]}")
             return result
 
 # --- Установка команд меню ---
@@ -165,47 +159,51 @@ async def set_default_commands():
     await bot.set_my_commands(commands)
     print("✅ Меню команд установлено")
 
-# --- Команды ---
+# --- Хендлеры ---
 @dp.message(Command('start'))
 async def start_command(message: Message, state: FSMContext):
+    print(f"📩 Получена команда /start от {message.from_user.id}")
     await state.clear()
     await message.reply(
-        "👋 Привет! Отправь скриншот или видео, и я найду аниме.\n\n"
-        "❓ Помощь — /help",
+        "👋 Привет! Отправь скриншот или видео, и я найду аниме.\n\n❓ Помощь — /help",
         reply_markup=help_kb
     )
 
 @dp.message(Command('help'))
 async def help_command(message: Message):
+    print(f"📩 Получена команда /help от {message.from_user.id}")
     await message.reply(
         "🤖 **Бот для поиска аниме по кадру**\n\n"
         "📸 Отправьте скриншот или видео — я найду тайтл.\n"
         "🔄 Если результат не тот — нажмите «Нет, ищи другое».\n"
         "🔗 В ответе даю ссылку на Shikimori.\n\n"
-        "Команды:\n"
-        "/start — начать заново\n"
-        "/help — эта справка"
+        "Команды:\n/start — начать заново\n/help — эта справка"
     )
 
 @dp.callback_query(lambda c: c.data == "help")
 async def process_help(callback: CallbackQuery):
+    print(f"📩 Нажата кнопка помощи от {callback.from_user.id}")
     try:
         await callback.answer()
         await callback.message.answer(
             "🤖 **Бот для поиска аниме по кадру**\n\n"
             "📸 Отправьте скриншот или видео — я найду тайтл.\n"
             "🔄 Если результат не тот — нажмите «Нет, ищи другое».\n"
-            "🔗 В ответе даю ссылку на Shikimori.\n\n"
-            "Команды:\n"
-            "/start — начать заново\n"
-            "/help — эта справка"
+            "🔗 В ответе даю ссылку на Shikimori."
         )
     except Exception as e:
-        print(f"Ошибка в process_help: {e}")
+        print(f"❌ Ошибка в process_help: {e}")
+
+# --- ДЕБАГ: обработчик любых сообщений (чтобы видеть, что приходит) ---
+@dp.message()
+async def debug_all_messages(message: Message):
+    print(f"📩 Получено сообщение типа {message.content_type} от {message.from_user.id}")
+    # Если это фото или видео, они обработаются в других хендлерах, но мы просто залогируем
 
 # --- Обработчик фото ---
 @dp.message(lambda msg: msg.photo is not None)
 async def handle_photo(message: Message, state: FSMContext):
+    print(f"📸 Обработка фото от {message.from_user.id}")
     try:
         user_id = message.from_user.id
         now = time.time()
@@ -218,15 +216,16 @@ async def handle_photo(message: Message, state: FSMContext):
         file = await bot.get_file(photo.file_id)
         file_bytes = await bot.download_file(file.file_path)
         raw_bytes = file_bytes.getvalue()
+        print(f"   📥 Фото скачано, размер {len(raw_bytes)} байт")
 
         cache_key = get_cache_key(raw_bytes)
         cached = await get_cached_result(cache_key)
         if cached:
+            print("   ♻️ Используем кеш")
             await state.update_data(results=cached['result'], index=0, video_bytes=None, search_count=0)
             await show_result(message, state, 0)
             return
 
-        # Без сжатия
         compressed = compress_image(raw_bytes)
         result = await search_by_frame(compressed)
 
@@ -245,12 +244,13 @@ async def handle_photo(message: Message, state: FSMContext):
     except asyncio.TimeoutError:
         await message.reply("⏳ Сервис поиска долго отвечает.")
     except Exception as e:
-        print(f"Ошибка handle_photo:\n{traceback.format_exc()}")
+        print(f"❌ Ошибка handle_photo:\n{traceback.format_exc()}")
         await message.reply("⚠️ Ошибка, попробуй другой скриншот или /start")
 
 # --- Обработчик видео ---
 @dp.message(lambda msg: msg.video is not None)
 async def handle_video(message: Message, state: FSMContext):
+    print(f"🎬 Обработка видео от {message.from_user.id}")
     try:
         user_id = message.from_user.id
         now = time.time()
@@ -263,10 +263,12 @@ async def handle_video(message: Message, state: FSMContext):
         file = await bot.get_file(video.file_id)
         file_bytes = await bot.download_file(file.file_path)
         raw_bytes = file_bytes.getvalue()
+        print(f"   📥 Видео скачано, размер {len(raw_bytes)} байт")
 
         cache_key = get_cache_key(raw_bytes)
         cached = await get_cached_result(cache_key)
         if cached:
+            print("   ♻️ Используем кеш")
             await state.update_data(results=cached['result'], index=0, video_bytes=raw_bytes, search_count=0)
             await show_result(message, state, 0)
             return
@@ -285,6 +287,7 @@ async def handle_video(message: Message, state: FSMContext):
 
         found_result = None
         for idx, frame_bytes in enumerate(frames):
+            print(f"   🔍 Ищем по кадру {idx+1}/{len(frames)}")
             compressed = compress_image(frame_bytes)
             result = await search_by_frame(compressed)
             if result.get('result') and len(result['result']) > 0:
@@ -301,11 +304,12 @@ async def handle_video(message: Message, state: FSMContext):
         await show_result(message, state, 0)
 
     except Exception as e:
-        print(f"Ошибка handle_video:\n{traceback.format_exc()}")
+        print(f"❌ Ошибка handle_video:\n{traceback.format_exc()}")
         await message.reply("⚠️ Ошибка, попробуй другой файл или /start")
 
 # --- Функция показа результата ---
 async def show_result(message: Message, state: FSMContext, idx: int):
+    print(f"📤 Показ результата {idx+1}")
     try:
         data = await state.get_data()
         results = data.get('results')
@@ -339,12 +343,13 @@ async def show_result(message: Message, state: FSMContext, idx: int):
         await state.update_data(index=idx)
 
     except Exception as e:
-        print(f"Ошибка show_result: {e}")
+        print(f"❌ Ошибка show_result: {e}")
         await message.reply("⚠️ Ошибка, попробуй /start")
 
 # --- Кнопка "Нет, ищи другое" ---
 @dp.callback_query(lambda c: c.data == "next")
 async def process_next(callback: CallbackQuery, state: FSMContext):
+    print(f"🔄 Нажата кнопка 'Нет, ищи другое' от {callback.from_user.id}")
     try:
         await callback.answer()
         data = await state.get_data()
@@ -359,6 +364,7 @@ async def process_next(callback: CallbackQuery, state: FSMContext):
             return
 
         if video_bytes is not None and search_count == 0:
+            print("   🔄 Используем второй набор кадров для видео")
             percentages_second = [8, 22, 53, 75, 90]
             with tempfile.NamedTemporaryFile(delete=False, suffix=".mp4") as tmp_file:
                 tmp_file.write(video_bytes)
@@ -406,7 +412,7 @@ async def process_next(callback: CallbackQuery, state: FSMContext):
             pass
 
     except Exception as e:
-        print(f"Ошибка process_next: {e}")
+        print(f"❌ Ошибка process_next: {e}")
         await callback.message.answer("⚠️ Ошибка, попробуй /start")
 
 # --- Веб-сервер health-check ---
@@ -427,16 +433,19 @@ async def start_web_server():
 
 # --- Запуск ---
 async def main():
+    print("🚀 Запуск main()")
     await set_default_commands()
+    print("✅ Команды установлены")
     try:
         await asyncio.gather(
             dp.start_polling(bot),
             start_web_server()
         )
     except Exception as e:
-        print(f"Критическая ошибка: {e}")
+        print(f"❌ Критическая ошибка: {e}")
         await asyncio.sleep(5)
         os.execv(sys.executable, ['python'] + sys.argv)
 
 if __name__ == '__main__':
+    print("🏁 Запуск скрипта")
     asyncio.run(main())
