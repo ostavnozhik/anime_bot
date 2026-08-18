@@ -151,29 +151,28 @@ async def help_command(message: Message):
     await message.reply(
         "🤖 **Бот для поиска аниме по кадру**\n\n"
         "📸 Отправьте скриншот или видео — я найду тайтл.\n"
-        "🎬 Для видео беру 5 кадров (5/20/50/70/95%).\n"
         "🔄 Если результат не тот — нажмите «Нет, ищи другое».\n"
-        "   (для видео — второй набор кадров 8/22/53/75/90%)\n"
         "🔗 В ответе даю ссылку на Shikimori.\n\n"
         "Команды:\n"
         "/start — начать заново\n"
         "/help — эта справка"
     )
 
-# --- Обработчик кнопки "Помощь" ---
 @dp.callback_query(lambda c: c.data == "help")
 async def process_help(callback: CallbackQuery):
     try:
         await callback.answer()
         await callback.message.answer(
             "🤖 **Бот для поиска аниме по кадру**\n\n"
-            "📸 Отправьте скриншот или видео — я найду тайтл.\n
+            "📸 Отправьте скриншот или видео — я найду тайтл.\n"
             "🔄 Если результат не тот — нажмите «Нет, ищи другое».\n"
             "🔗 В ответе даю ссылку на Shikimori.\n\n"
             "Команды:\n"
             "/start — начать заново\n"
             "/help — эта справка"
         )
+    except Exception as e:
+        print(f"Ошибка в process_help: {e}")
     except Exception as e:
         print(f"Ошибка в process_help: {e}")
 
