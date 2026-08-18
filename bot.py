@@ -34,12 +34,14 @@ except Exception:
     print("❌ FFmpeg НЕ ДОСТУПЕН")
     sys.exit(1)
 
-# --- СОЗДАЁМ БОТА И ДИСПЕТЧЕРА ---
+# ==== ИНИЦИАЛИЗАЦИЯ ====
 bot = Bot(token=BOT_TOKEN)
-dp = Dispatcher()  # <-- ЭТОТ ОБЪЕКТ НУЖЕН ДЛЯ ДЕКОРАТОРОВ
+dp = Dispatcher()  # <-- ЭТО ОБЪЕКТ, ОН НУЖЕН
 
-# --- Хранилище данных пользователей ---
+# Хранилище данных пользователей
 user_data = {}
+
+# Кеш
 search_cache = {}
 CACHE_TTL = 3600
 
@@ -58,10 +60,11 @@ async def get_cached_result(key: str):
 def cache_result(key: str, result):
     search_cache[key] = (result, time.time())
 
+# Троттлинг
 user_last_request = defaultdict(float)
 REQUEST_INTERVAL = 3
 
-# --- Клавиатуры ---
+# Клавиатуры
 help_kb = InlineKeyboardMarkup(
     inline_keyboard=[
         [InlineKeyboardButton(text="❓ Помощь", callback_data="help")]
@@ -74,7 +77,7 @@ next_kb = InlineKeyboardMarkup(
     ]
 )
 
-# --- Вспомогательные функции ---
+# ==== ВСПОМОГАТЕЛЬНЫЕ ФУНКЦИИ ====
 def format_time(seconds: float) -> str:
     minutes = int(seconds // 60)
     secs = int(seconds % 60)
@@ -137,7 +140,7 @@ async def search_by_frame(image_bytes: bytes) -> dict:
             print(f"   📨 Ответ trace.moe: {json.dumps(result, indent=2, ensure_ascii=False)[:1000]}")
             return result
 
-# --- Установка команд меню ---
+# ==== КОМАНДЫ И ХЕНДЛЕРЫ ====
 async def set_default_commands():
     commands = [
         BotCommand(command="start", description="🚀 Запустить бота"),
@@ -145,8 +148,6 @@ async def set_default_commands():
     ]
     await bot.set_my_commands(commands)
     print("✅ Меню команд установлено")
-
-# --- ХЕНДЛЕРЫ (все используют dp, который уже создан) ---
 
 @dp.message(Command('start'))
 async def start_command(message: Message):
@@ -458,7 +459,7 @@ async def process_next(callback: CallbackQuery):
         print(f"❌ Ошибка process_next: {e}")
         await callback.message.answer("⚠️ Ошибка, попробуй /start")
 
-# --- Веб-сервер health-check ---
+# ==== ВЕБ-СЕРВЕР ДЛЯ HEALTH-CHECK ====
 async def handle_health(request):
     return web.Response(text="OK")
 
@@ -474,7 +475,7 @@ async def start_web_server():
     print(f"✅ Веб-сервер health-check запущен на порту {port}")
     await asyncio.Event().wait()
 
-# --- Запуск ---
+# ==== ЗАПУСК ====
 async def main():
     print("🚀 Запуск main()")
     await set_default_commands()
