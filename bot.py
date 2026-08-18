@@ -37,6 +37,9 @@ except Exception:
 bot = Bot(token=BOT_TOKEN)
 dp = Dispatcher()
 
+# --- Хранилище пользователей (простой словарь) ---
+user_data = {}
+
 # --- Кеш ---
 search_cache = {}
 CACHE_TTL = 3600
@@ -67,6 +70,13 @@ help_kb = InlineKeyboardMarkup(
     ]
 )
 
+next_kb = InlineKeyboardMarkup(
+    inline_keyboard=[
+        [InlineKeyboardButton(text="❌ Нет, ищи другое", callback_data="next")]
+    ]
+)
+
+# --- Вспомогательные функции ---
 def format_time(seconds: float) -> str:
     minutes = int(seconds // 60)
     secs = int(seconds % 60)
@@ -140,7 +150,9 @@ async def set_default_commands():
 
 @dp.message(Command('start'))
 async def start_command(message: Message):
-    print(f"📩 /start от {message.from_user.id}")
+    user_id = message.from_user.id
+    user_data.pop(user_id, None)
+    print(f"📩 /start от {user_id}")
     await message.reply(
         "👋 Привет! Отправь скриншот или видео, и я найду аниме.\n\n❓ Помощь — /help",
         reply_markup=help_kb
@@ -175,6 +187,10 @@ async def process_help(callback: CallbackQuery):
 async def handle_photo(message: Message):
     user_id = message.from_user.id
     print(f"📸 Обработка фото от {user_id}")
+    
+    # Полная очистка старых данных
+    user_data.pop(user_id, None)
+    
     try:
         now = time.time()
         if now - user_last_request[user_id] < REQUEST_INTERVAL:
@@ -192,8 +208,13 @@ async def handle_photo(message: Message):
         cached = await get_cached_result(cache_key)
         if cached:
             print("   ♻️ Используем кеш")
-            results = cached['result']
-            await send_result(message, results, 0, cache_key)
+            user_data[user_id] = {
+                'results': cached['result'],
+                'index': 0,
+                'video_bytes': None,
+                'search_count': 0
+            }
+            await show_result(message, user_id)
             return
 
         compressed = compress_image(raw_bytes)
@@ -213,7 +234,13 @@ async def handle_photo(message: Message):
             return
 
         cache_result(cache_key, {'result': results_list})
-        await send_result(message, results_list, 0, cache_key)
+        user_data[user_id] = {
+            'results': results_list,
+            'index': 0,
+            'video_bytes': None,
+            'search_count': 0
+        }
+        await show_result(message, user_id)
 
     except asyncio.TimeoutError:
         await message.reply("⏳ Сервис поиска долго отвечает.")
@@ -225,6 +252,9 @@ async def handle_photo(message: Message):
 async def handle_video(message: Message):
     user_id = message.from_user.id
     print(f"🎬 Обработка видео от {user_id}")
+    
+    user_data.pop(user_id, None)
+    
     try:
         now = time.time()
         if now - user_last_request[user_id] < REQUEST_INTERVAL:
@@ -246,8 +276,13 @@ async def handle_video(message: Message):
         cached = await get_cached_result(cache_key)
         if cached:
             print("   ♻️ Используем кеш")
-            results = cached['result']
-            await send_result(message, results, 0, cache_key)
+            user_data[user_id] = {
+                'results': cached['result'],
+                'index': 0,
+                'video_bytes': raw_bytes,
+                'search_count': 0
+            }
+            await show_result(message, user_id)
             return
 
         percentages_first = [5, 20, 50, 70, 95]
@@ -282,20 +317,62 @@ async def handle_video(message: Message):
             return
 
         cache_result(cache_key, {'result': results_list})
-        await send_result(message, results_list, 0, cache_key)
+        user_data[user_id] = {
+            'results': results_list,
+            'index': 0,
+            'video_bytes': raw_bytes,
+            'search_count': 0
+        }
+        await show_result(message, user_id)
 
     except Exception as e:
         print(f"❌ Ошибка handle_video:\n{traceback.format_exc()}")
         await message.reply("⚠️ Ошибка, попробуй другой файл или /start")
 
-async def send_result(message: Message, results: list, idx: int, cache_key: str):
-    """Отправляет результат пользователю с кнопкой 'Нет, ищи другое'."""
+async def show_result(message: Message, user_id: int):
+    print(f"📤 Показ результата для {user_id}")
     try:
+        data = user_data.get(user_id)
+        if not data:
+            await message.reply("⚠️ Данные не найдены. Попробуй /start")
+            return
+
+        results = data.get('results')
+        idx = data.get('index', 0)
+
+        # === ЖЁСТКАЯ ПРОВЕРКА ===
+        print(f"   🔍 Тип results: {type(results)}")
+        print(f"   🔍 Тип idx: {type(idx)}")
+        print(f"   🔍 idx = {idx}")
+
+        if not isinstance(results, list):
+            user_data.pop(user_id, None)
+            await message.reply("⚠️ Ошибка данных. Попробуй /start заново.")
+            return
+
+        if not results:
+            user_data.pop(user_id, None)
+            await message.reply("⚠️ Данные пустые. Попробуй /start заново.")
+            return
+
+        if not isinstance(results[0], dict):
+            user_data.pop(user_id, None)
+            await message.reply("⚠️ Неверный формат данных. Попробуй /start заново.")
+            return
+
         if idx >= len(results):
             await message.reply("🏁 Это был последний результат. Попробуй другой файл.")
+            user_data.pop(user_id, None)
             return
 
         best = results[idx]
+        print(f"   🔍 Тип best: {type(best)}")
+
+        if not isinstance(best, dict):
+            user_data.pop(user_id, None)
+            await message.reply("⚠️ Ошибка данных. Попробуй /start заново.")
+            return
+
         name = extract_title(best)
         episode = best.get('episode', 'неизвестно')
         from_time = best.get('from', 0.0)
@@ -316,54 +393,95 @@ async def send_result(message: Message, results: list, idx: int, cache_key: str)
         if shikimori_url:
             answer += f"\n\n🔗 [Смотреть на Shikimori]({shikimori_url})"
 
-        # Кнопка с callback_data, содержащей хеш и следующий индекс
-        next_idx = idx + 1
-        if next_idx < len(results):
-            callback_data = f"next:{cache_key}:{next_idx}"
-            keyboard = InlineKeyboardMarkup(
-                inline_keyboard=[
-                    [InlineKeyboardButton(text="❌ Нет, ищи другое", callback_data=callback_data)]
-                ]
-            )
-        else:
-            keyboard = None
-
-        await message.reply(answer, reply_markup=keyboard)
+        await message.reply(answer, reply_markup=next_kb)
+        user_data[user_id]['index'] = idx
 
     except Exception as e:
-        print(f"❌ Ошибка send_result: {e}")
+        print(f"❌ Ошибка show_result: {e}")
         await message.reply("⚠️ Ошибка отображения результата. Попробуй /start.")
 
-@dp.callback_query(lambda c: c.data.startswith("next:"))
-async def process_next_callback(callback: CallbackQuery):
-    print(f"🔄 Нажата 'Нет, ищи другое' от {callback.from_user.id}")
+@dp.callback_query(lambda c: c.data == "next")
+async def process_next(callback: CallbackQuery):
+    user_id = callback.from_user.id
+    print(f"🔄 Нажата 'Нет, ищи другое' от {user_id}")
     try:
         await callback.answer()
-        # Парсим callback_data
-        _, cache_key, idx_str = callback.data.split(":")
-        idx = int(idx_str)
-
-        # Получаем результаты из кеша
-        cached = await get_cached_result(cache_key)
-        if not cached:
-            await callback.message.edit_text("⚠️ Данные устарели. Попробуй /start заново.")
+        data = user_data.get(user_id)
+        if not data:
+            await callback.message.edit_text("⚠️ Данные не найдены. Попробуй /start")
             return
 
-        results = cached['result']
-        if not results or idx >= len(results):
+        results = data.get('results')
+        idx = data.get('index', 0)
+        video_bytes = data.get('video_bytes')
+        search_count = data.get('search_count', 0)
+
+        if not isinstance(results, list) or not results or not isinstance(results[0], dict):
+            await callback.message.edit_text("⚠️ Ошибка данных. Попробуй /start")
+            user_data.pop(user_id, None)
+            return
+
+        if video_bytes is not None and search_count == 0:
+            print("   🔄 Используем второй набор кадров")
+            percentages_second = [8, 22, 53, 75, 90]
+            with tempfile.NamedTemporaryFile(delete=False, suffix=".mp4") as tmp_file:
+                tmp_file.write(video_bytes)
+                video_path = tmp_file.name
+
+            frames = extract_frames(video_path, percentages_second)
+            os.unlink(video_path)
+
+            if not frames:
+                await callback.message.edit_text("⚠️ Не удалось извлечь кадры.")
+                return
+
+            found_result = None
+            for frame_bytes in frames:
+                compressed = compress_image(frame_bytes)
+                result = await search_by_frame(compressed)
+                if result.get('result') and len(result['result']) > 0:
+                    found_result = result
+                    break
+                await asyncio.sleep(0.5)
+
+            if not found_result:
+                await callback.message.edit_text("😔 Второй набор кадров ничего не дал.")
+                user_data.pop(user_id, None)
+                return
+
+            new_results = found_result['result']
+            if not new_results or not isinstance(new_results[0], dict):
+                await callback.message.edit_text("⚠️ Неверный формат данных.")
+                return
+
+            user_data[user_id] = {
+                'results': new_results,
+                'index': 0,
+                'video_bytes': video_bytes,
+                'search_count': 1
+            }
+            await show_result(callback.message, user_id)
+            try:
+                await callback.message.delete()
+            except Exception:
+                pass
+            return
+
+        next_idx = idx + 1
+        if next_idx >= len(results):
             await callback.message.edit_text("🏁 Это был последний результат.")
+            user_data.pop(user_id, None)
             return
 
-        # Показываем следующий результат
-        await send_result(callback.message, results, idx, cache_key)
-        # Удаляем старое сообщение с кнопкой
+        user_data[user_id]['index'] = next_idx
+        await show_result(callback.message, user_id)
         try:
             await callback.message.delete()
         except Exception:
             pass
 
     except Exception as e:
-        print(f"❌ Ошибка process_next_callback: {e}")
+        print(f"❌ Ошибка process_next: {e}")
         await callback.message.answer("⚠️ Ошибка, попробуй /start")
 
 # --- Веб-сервер ---
